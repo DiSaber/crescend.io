@@ -6,7 +6,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
 };
 
-use crate::models::lobby::{JoinCode, Lobby, LobbyId};
+use crate::models::lobby::{Lobby, LobbyId};
 
 pub const LOBBY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 pub const LOBBY_LIFETIME: TimeDelta = TimeDelta::minutes(1);
@@ -32,8 +32,7 @@ impl Database {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS lobbies (
-                id INTEGER PRIMARY KEY,
-                join_code BLOB NOT NULL UNIQUE CHECK (length(join_code) = 3),
+                id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 3),
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL CHECK (expires_at >= created_at)
             ) STRICT
@@ -47,23 +46,23 @@ impl Database {
 
     pub async fn create_lobby(
         &self,
-        join_code: JoinCode,
+        id: LobbyId,
         created_at: DateTime<Utc>,
-    ) -> Result<LobbyId, sqlx::Error> {
+    ) -> Result<(), sqlx::Error> {
         let expires_at = created_at + LOBBY_LIFETIME;
-        let result = sqlx::query(
+        sqlx::query(
             r#"
-            INSERT INTO lobbies (join_code, created_at, expires_at)
+            INSERT INTO lobbies (id, created_at, expires_at)
             VALUES (?, ?, ?)
             "#,
         )
-        .bind(join_code)
+        .bind(id)
         .bind(created_at)
         .bind(expires_at)
         .execute(&self.db_pool)
         .await?;
 
-        Ok(LobbyId::new(result.last_insert_rowid()))
+        Ok(())
     }
 
     pub async fn get_active_lobby(
@@ -73,7 +72,7 @@ impl Database {
     ) -> Result<Option<Lobby>, sqlx::Error> {
         sqlx::query_as(
             r#"
-            SELECT id, join_code, created_at, expires_at
+            SELECT id, created_at, expires_at
             FROM lobbies
             WHERE id = ? AND expires_at > ?
             "#,
