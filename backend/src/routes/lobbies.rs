@@ -5,9 +5,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 
-use crate::{app_state::AppState, models::lobby::LobbyId};
+use crate::{
+    app_state::AppState,
+    models::lobby::{Lobby, LobbyId},
+};
+
+const LOBBY_LIFETIME: TimeDelta = TimeDelta::minutes(1);
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/", post(create_lobby))
@@ -19,10 +24,13 @@ async fn create_lobby(State(app_state): State<AppState>) -> Result<Json<LobbyId>
     // TODO: Retry until unique id?
     // probably fine to leave for now
     let lobby_id = LobbyId::new(rand::random());
-    app_state
-        .database
-        .create_lobby(lobby_id, Utc::now())
-        .await?;
+    let created_at = Utc::now();
+    let lobby = Lobby {
+        id: lobby_id,
+        created_at,
+        expires_at: created_at + LOBBY_LIFETIME,
+    };
+    app_state.database.create_lobby(lobby).await?;
 
     Ok(Json(lobby_id))
 }

@@ -1,6 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode},
@@ -9,7 +9,6 @@ use sqlx::{
 use crate::models::lobby::{Lobby, LobbyId};
 
 pub const LOBBY_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
-pub const LOBBY_LIFETIME: TimeDelta = TimeDelta::minutes(1);
 
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -44,21 +43,16 @@ impl Database {
         Ok(())
     }
 
-    pub async fn create_lobby(
-        &self,
-        id: LobbyId,
-        created_at: DateTime<Utc>,
-    ) -> Result<(), sqlx::Error> {
-        let expires_at = created_at + LOBBY_LIFETIME;
+    pub async fn create_lobby(&self, lobby: Lobby) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
             INSERT INTO lobbies (id, created_at, expires_at)
             VALUES (?, ?, ?)
             "#,
         )
-        .bind(id)
-        .bind(created_at)
-        .bind(expires_at)
+        .bind(lobby.id)
+        .bind(lobby.created_at)
+        .bind(lobby.expires_at)
         .execute(&self.db_pool)
         .await?;
 
