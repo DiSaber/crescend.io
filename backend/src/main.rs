@@ -14,6 +14,7 @@ async fn main() {
         .create_tables()
         .await
         .expect("Database tables should be created");
+    database.start_lobby_cleanup();
 
     let app = routes::router().with_state(AppState { database });
 

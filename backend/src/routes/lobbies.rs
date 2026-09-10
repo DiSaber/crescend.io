@@ -5,31 +5,55 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use chrono::{TimeDelta, Utc};
 
-use crate::{app_state::AppState, models::lobby::JoinCode};
+use crate::{
+    app_state::AppState,
+    models::lobby::{Lobby, LobbyId},
+};
+
+const LOBBY_LIFETIME: TimeDelta = TimeDelta::minutes(1);
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/", post(create_lobby))
 }
 
 // TODO: Should this also return the initial owner/admin session token?
-/// Creates a new lobby and returns.
-async fn create_lobby(State(_app_state): State<AppState>) -> Result<Json<String>, LobbyError> {
-    // TODO: Store in db
-    let join_code = JoinCode::new(rand::random());
-    Ok(Json(join_code.to_string()))
+/// Creates a new lobby and returns its identifier.
+async fn create_lobby(State(app_state): State<AppState>) -> Result<Json<LobbyId>, LobbyError> {
+    // TODO: Retry until unique id?
+    // probably fine to leave for now
+    let lobby_id = LobbyId::new(rand::random());
+    let created_at = Utc::now();
+    let lobby = Lobby {
+        id: lobby_id,
+        created_at,
+        expires_at: created_at + LOBBY_LIFETIME,
+    };
+    app_state.database.create_lobby(lobby).await?;
+
+    Ok(Json(lobby_id))
 }
 
 // TODO: Probably a shared `AppError`
 #[derive(Debug)]
-pub enum LobbyError {}
+pub enum LobbyError {
+    Database(sqlx::Error),
+}
+
+impl From<sqlx::Error> for LobbyError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
 
 impl IntoResponse for LobbyError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Something went wrong.".to_owned(),
-        )
-            .into_response()
+        match self {
+            Self::Database(error) => {
+                eprintln!("lobby database operation failed: {error}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.").into_response()
+            }
+        }
     }
 }
