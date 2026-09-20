@@ -27,17 +27,6 @@ or for release builds (optimization)
 cargo run --release
 ```
 
-### YouTube integration
+### API documentation
 
-The backend exposes `POST /api/youtube/metadata` for guest add-song flows.
-Send a JSON body containing a YouTube watch, short, embed, or `youtu.be` URL:
-
-```json
-{ "url": "https://youtu.be/dQw4w9WgXcQ" }
-```
-
-The response normalizes the link and returns the video ID, oEmbed title/author
-metadata, thumbnail, and an embeddable player URL. The client can use
-`video_id` as the queue's stable identity, render `embed_url` in the player,
-and request the next queue item when the YouTube player reports `ENDED`.
-Playlist URLs and non-YouTube URLs are rejected with `422`.
+With the backend running, open [Scalar](http://localhost:3000/scalar) to explore and try the existing endpoints.

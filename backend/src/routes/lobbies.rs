@@ -20,6 +20,17 @@ pub fn router() -> Router<AppState> {
 
 // TODO: Should this also return the initial owner/admin session token?
 /// Creates a new lobby and returns its identifier.
+///
+/// The lobby expires one minute after creation. No request body is required.
+#[utoipa::path(
+    post,
+    path = "/api/lobbies",
+    tag = "Lobbies",
+    responses(
+        (status = 200, description = "Lobby created", body = LobbyId),
+        (status = 500, description = "Database operation failed", body = String, content_type = "text/plain", example = "Something went wrong.")
+    )
+)]
 async fn create_lobby(State(app_state): State<AppState>) -> Result<Json<LobbyId>, LobbyError> {
     // TODO: Retry until unique id?
     // probably fine to leave for now
