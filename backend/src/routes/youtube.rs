@@ -4,28 +4,15 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use url::Url;
+
+use crate::models::youtube::{MetadataRequest, VideoMetadata};
 
 const OEMBED_ENDPOINT: &str = "https://www.youtube.com/oembed";
 
 pub fn router() -> Router<crate::app_state::AppState> {
     Router::new().route("/metadata", post(metadata))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MetadataRequest {
-    pub url: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct VideoMetadata {
-    pub video_id: String,
-    pub title: String,
-    pub author_name: String,
-    pub author_url: String,
-    pub thumbnail_url: String,
-    pub embed_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +23,24 @@ struct OEmbedResponse {
     thumbnail_url: String,
 }
 
+/// Fetch metadata for a YouTube video.
+///
+/// Normalizes supported video links and retrieves title, author, and thumbnail
+/// information from YouTube oEmbed. Playlist and non-YouTube URLs are rejected.
+#[utoipa::path(
+    post,
+    path = "/api/youtube/metadata",
+    tag = "YouTube",
+    request_body = MetadataRequest,
+    responses(
+        (status = 200, description = "Video metadata retrieved", body = VideoMetadata),
+        (status = 400, description = "Malformed JSON request body", body = String, content_type = "text/plain"),
+        (status = 413, description = "Request body exceeds the size limit", body = String, content_type = "text/plain"),
+        (status = 415, description = "Missing or unsupported JSON content type", body = String, content_type = "text/plain"),
+        (status = 422, description = "Invalid YouTube video URL or JSON does not match the request schema", body = String, content_type = "text/plain"),
+        (status = 502, description = "YouTube metadata service could not be reached or metadata is unavailable", body = String, content_type = "text/plain")
+    )
+)]
 async fn metadata(
     Json(request): Json<MetadataRequest>,
 ) -> Result<Json<VideoMetadata>, YoutubeError> {

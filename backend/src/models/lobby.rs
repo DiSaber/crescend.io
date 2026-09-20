@@ -11,7 +11,10 @@ use sqlx::{
 };
 
 /// Identifier for a lobby.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr, utoipa::ToSchema,
+)]
+#[schema(value_type = String, pattern = "^[0-9a-f]{6}$", example = "a1b2c3")]
 pub struct LobbyId([u8; 3]);
 
 impl LobbyId {

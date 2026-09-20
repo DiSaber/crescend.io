@@ -15,6 +15,8 @@ serde_with = "3.23.0"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "sqlite", "derive", "chrono"] }
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
+utoipa = { version = "5.5.0", features = ["axum_extras"] }
+utoipa-scalar = { version = "0.3.0", features = ["axum"] }
 
 # oh yeah mega speed
 [profile.release]
