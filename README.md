@@ -15,7 +15,7 @@ First cd to the backend directory
 cd backend
 ```
 
-Then you can run with
+Set the environment variables below, then run with
 
 ```bash
 cargo run
@@ -30,3 +30,14 @@ cargo run --release
 ### API documentation
 
 With the backend running, open [Scalar](http://localhost:3000/scalar) to explore and try the existing endpoints.
+
+### Environment variables
+
+For development, put these required variables in `backend/.env`:
+
+| Variable | Value |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | Registered callback URL (local: `http://localhost:3000/api/auth/google/callback`) |
+| `JWT_SIGNING_SECRET` | Random signing secret, at least 32 bytes |

@@ -1,7 +1,6 @@
 use std::{fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use sqlx::{
     Database, Decode, Encode, Sqlite, Type,
@@ -74,19 +73,4 @@ pub struct Lobby {
     pub id: LobbyId,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ClientLobby {
-    pub id: LobbyId,
-    pub created_at: DateTime<Utc>,
-}
-
-impl From<Lobby> for ClientLobby {
-    fn from(lobby: Lobby) -> Self {
-        Self {
-            id: lobby.id,
-            created_at: lobby.created_at,
-        }
-    }
 }

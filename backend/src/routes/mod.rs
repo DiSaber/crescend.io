@@ -1,8 +1,11 @@
+mod auth;
 mod lobbies;
 mod youtube;
 
+use crate::auth::JwtAuth;
 use axum::Router;
-use utoipa::OpenApi;
+use tower_http::auth::AsyncRequireAuthorizationLayer;
+use utoipa::{Modify, OpenApi};
 use utoipa_scalar::{Scalar, Servable};
 
 use crate::app_state::AppState;
@@ -10,17 +13,46 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::create_lobby, youtube::metadata),
+    paths(lobbies::create_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens),
+    modifiers(&Security),
     tags(
+        (name = "Authentication", description = "Google login"),
         (name = "Lobbies", description = "Lobby endpoints"),
         (name = "YouTube", description = "YouTube endpoints")
     )
 )]
 struct ApiDoc;
 
-pub fn router() -> Router<AppState> {
+struct Security;
+impl Modify for Security {
+    fn modify(&self, doc: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        doc.components
+            .as_mut()
+            .expect("OpenAPI components")
+            .add_security_scheme(
+                "bearer_auth",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+    }
+}
+
+pub fn router(jwt: JwtAuth) -> Router<AppState> {
+    let protected = Router::new()
+        .nest("/api/lobbies", lobbies::router())
+        .route_layer(AsyncRequireAuthorizationLayer::new(jwt));
     Router::new()
         .merge(Scalar::with_url("/scalar", ApiDoc::openapi()))
-        .nest("/api/lobbies", lobbies::router())
+        .merge(protected)
+        .nest("/api/auth/google", auth::router())
+        .route(
+            "/api/auth/refresh",
+            axum::routing::post(auth::refresh_tokens),
+        )
         .nest("/api/youtube", youtube::router())
 }
