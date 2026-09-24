@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -9,6 +9,7 @@ use chrono::{TimeDelta, Utc};
 
 use crate::{
     app_state::AppState,
+    auth::AuthenticatedUser,
     models::lobby::{Lobby, LobbyId},
 };
 
@@ -26,12 +27,17 @@ pub fn router() -> Router<AppState> {
     post,
     path = "/api/lobbies",
     tag = "Lobbies",
+    security(("bearer_auth" = [])),
     responses(
+        (status = 401, description = "Missing, invalid or expired bearer token", body = crate::auth::ErrorResponse),
         (status = 200, description = "Lobby created", body = LobbyId),
         (status = 500, description = "Database operation failed", body = String, content_type = "text/plain", example = "Something went wrong.")
     )
 )]
-async fn create_lobby(State(app_state): State<AppState>) -> Result<Json<LobbyId>, LobbyError> {
+async fn create_lobby(
+    State(app_state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+) -> Result<Json<LobbyId>, LobbyError> {
     // TODO: Retry until unique id?
     // probably fine to leave for now
     let lobby_id = LobbyId::new(rand::random());

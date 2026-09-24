@@ -1,6 +1,9 @@
-use crate::database::Database;
+use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+use crate::{auth::Auth, database::Database};
+
+#[derive(Clone)]
 pub struct AppState {
     pub database: Database,
+    pub auth: Arc<Auth>,
 }
