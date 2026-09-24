@@ -4,7 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
 use serde_json::{Value, json};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::sync::{
     OnceLock,
     atomic::{AtomicI64, Ordering},
@@ -293,4 +293,73 @@ async fn user_creation_and_lookup_return_persisted_models() {
         database.get_user_by_google_sub("first").await.unwrap(),
         user
     );
+}
+
+#[tokio::test]
+async fn concurrent_user_upserts_return_one_persisted_account() {
+    let file = tempfile::tempdir().unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(file.path().join("users.db"))
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let first = Database {
+        db_pool: SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+            .unwrap(),
+    };
+    first.create_tables().await.unwrap();
+    // Separate pools ensure the competing requests use different SQLite connections.
+    let second = Database {
+        db_pool: SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap(),
+    };
+    let before = chrono::Utc::now();
+    let (a, b) = tokio::join!(
+        first.upsert_user("new-google-user"),
+        second.upsert_user("new-google-user"),
+    );
+    let user = a.unwrap();
+    assert_eq!(b.unwrap(), user);
+    assert!(user.id > 0);
+    assert_eq!(user.google_sub, "new-google-user");
+    assert!(user.created_at >= before && user.created_at <= chrono::Utc::now());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&first.db_pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        first
+            .get_user_by_google_sub("new-google-user")
+            .await
+            .unwrap(),
+        user
+    );
+
+    // An older account's timestamp and ID must survive subsequent logins.
+    sqlx::query("UPDATE users SET created_at = ? WHERE id = ?")
+        .bind(before - chrono::Duration::days(1))
+        .bind(user.id)
+        .execute(&first.db_pool)
+        .await
+        .unwrap();
+    let existing = first
+        .get_user_by_google_sub("new-google-user")
+        .await
+        .unwrap();
+    assert_eq!(
+        second.upsert_user("new-google-user").await.unwrap(),
+        existing
+    );
+    assert_eq!(existing.id, user.id);
+    let other = second.upsert_user("other-google-user").await.unwrap();
+    assert_ne!(other.id, user.id);
+
+    first.db_pool.close().await;
+    second.db_pool.close().await;
 }

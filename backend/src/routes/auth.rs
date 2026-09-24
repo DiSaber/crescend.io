@@ -162,18 +162,11 @@ pub async fn callback(
             )
             .await?;
         // Only a verified Google subject can resolve an account; JWTs use its local ID.
-        let user = match state.database.get_user_by_google_sub(&subject).await {
-            Ok(user) => user,
-            Err(sqlx::Error::RowNotFound) => {
-                // A concurrent first login may win the insert; return 500 for now.
-                state
-                    .database
-                    .create_user(&subject)
-                    .await
-                    .map_err(|_| AuthError::Internal)?
-            }
-            Err(_) => return Err(AuthError::Internal),
-        };
+        let user = state
+            .database
+            .upsert_user(&subject)
+            .await
+            .map_err(|_| AuthError::Internal)?;
         refresh::issue(&state.database, user.id, &state.auth.clock).await
     }
     .await;

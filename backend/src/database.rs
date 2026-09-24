@@ -100,6 +100,20 @@ impl Database {
         .await
     }
 
+    /// Resolve a verified Google subject atomically, preserving an existing account's identity
+    /// and creation time even when multiple first logins arrive concurrently.
+    pub async fn upsert_user(&self, google_sub: &str) -> Result<User, sqlx::Error> {
+        sqlx::query_as(
+            "INSERT INTO users (google_sub, created_at) VALUES (?, ?)
+             ON CONFLICT (google_sub) DO UPDATE SET google_sub = excluded.google_sub
+             RETURNING id, google_sub, created_at",
+        )
+        .bind(google_sub)
+        .bind(Utc::now())
+        .fetch_one(&self.db_pool)
+        .await
+    }
+
     /// Returns `RowNotFound` when no user has this Google subject.
     pub async fn get_user_by_google_sub(&self, google_sub: &str) -> Result<User, sqlx::Error> {
         sqlx::query_as("SELECT id, google_sub, created_at FROM users WHERE google_sub = ?")
