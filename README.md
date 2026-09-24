@@ -31,6 +31,8 @@ cargo run --release
 
 With the backend running, open [Scalar](http://localhost:3000/scalar) to explore and try the existing endpoints.
 
+See [browser authentication](docs/browser-auth.md) for login, access-token bootstrap, logout, deployment, and migration examples.
+
 ### Environment variables
 
 For development, put these required variables in `backend/.env`:

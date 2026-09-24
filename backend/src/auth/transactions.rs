@@ -8,6 +8,7 @@ pub const LOGIN_SECONDS: i64 = 600;
 
 pub struct Attempt {
     pub nonce: Nonce,
+    pub return_to: String,
     binding: [u8; 32],
     expires: i64,
 }
@@ -30,6 +31,7 @@ impl Transactions {
         &self,
         now: i64,
         old_binding: Option<&str>,
+        return_to: String,
     ) -> Result<(CsrfToken, Nonce, String), AuthError> {
         let mut attempts = self.attempts.lock().await;
         let old = old_binding.map(hash);
@@ -46,6 +48,7 @@ impl Transactions {
             state.secret().clone(),
             Attempt {
                 nonce: nonce.clone(),
+                return_to,
                 binding: hash(&binding),
                 expires: now + LOGIN_SECONDS,
             },
@@ -80,24 +83,46 @@ mod tests {
     #[tokio::test]
     async fn attempts_are_bound_expiring_bounded_and_single_use() {
         let store = Transactions::new(1);
-        let (state, _, binding) = store.start(100, None).await.unwrap();
-        assert!(store.start(100, None).await.is_err());
+        let (state, _, binding) = store
+            .start(100, None, "/first?x=1#part".into())
+            .await
+            .unwrap();
+        assert!(
+            store
+                .start(100, None, "/first?x=1#part".into())
+                .await
+                .is_err()
+        );
         assert!(store.consume(state.secret(), "wrong", 100).await.is_err());
         let (a, b) = tokio::join!(
             store.consume(state.secret(), &binding, 100),
             store.consume(state.secret(), &binding, 100)
         );
         assert_ne!(a.is_ok(), b.is_ok());
-        let (state, _, binding) = store.start(100, None).await.unwrap();
+        assert_eq!(a.or(b).unwrap().return_to, "/first?x=1#part");
+        let (state, _, binding) = store
+            .start(100, None, "/first?x=1#part".into())
+            .await
+            .unwrap();
         assert!(store.consume(state.secret(), &binding, 700).await.is_err());
-        let (old, _, old_binding) = store.start(700, None).await.unwrap();
-        let (new, _, new_binding) = store.start(700, Some(&old_binding)).await.unwrap();
+        let (old, _, old_binding) = store.start(700, None, "/old".into()).await.unwrap();
+        let (new, _, new_binding) = store
+            .start(700, Some(&old_binding), "/new".into())
+            .await
+            .unwrap();
         assert!(
             store
                 .consume(old.secret(), &old_binding, 700)
                 .await
                 .is_err()
         );
-        assert!(store.consume(new.secret(), &new_binding, 700).await.is_ok());
+        assert_eq!(
+            store
+                .consume(new.secret(), &new_binding, 700)
+                .await
+                .unwrap()
+                .return_to,
+            "/new"
+        );
     }
 }

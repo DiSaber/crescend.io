@@ -136,7 +136,7 @@ impl Database {
         &self,
         token_hash: &[u8],
         clock: impl FnOnce() -> i64,
-        issue: impl FnOnce(i64) -> Result<(T, Vec<u8>), RefreshSessionError>,
+        issue: impl FnOnce(i64, i64) -> Result<(T, Vec<u8>), RefreshSessionError>,
     ) -> Result<T, RefreshSessionError> {
         // Reserve the SQLite writer before reading, including across processes/connections.
         let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -161,7 +161,7 @@ impl Database {
             .bind(token_hash)
             .execute(&mut *tx)
             .await?;
-        let (response, replacement_hash) = issue(user)?;
+        let (response, replacement_hash) = issue(user, expires)?;
         sqlx::query("INSERT INTO refresh_tokens (token_hash, session_id) VALUES (?, ?)")
             .bind(replacement_hash)
             .bind(session)
@@ -169,6 +169,19 @@ impl Database {
             .await?;
         tx.commit().await?;
         Ok(response)
+    }
+
+    /// A single committed update revokes the session for either a current or consumed hash.
+    /// Unknown credentials and repeated revocations are idempotent; other sessions are untouched.
+    pub async fn revoke_refresh_session(&self, token_hash: &[u8]) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE refresh_sessions SET revoked = 1 WHERE revoked = 0 AND id IN
+            (SELECT session_id FROM refresh_tokens WHERE token_hash = ?)",
+        )
+        .bind(token_hash)
+        .execute(&self.db_pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn create_lobby(&self, lobby: Lobby) -> Result<(), sqlx::Error> {

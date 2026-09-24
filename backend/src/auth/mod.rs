@@ -1,4 +1,6 @@
+pub mod browser;
 mod config;
+pub mod destination;
 mod google;
 mod jwt;
 pub mod refresh;
@@ -47,6 +49,7 @@ impl Auth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
     BadRequest,
+    Forbidden,
     Unauthorized,
     Unavailable,
     Internal,
@@ -61,6 +64,7 @@ impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error) = match self {
             Self::BadRequest => (StatusCode::BAD_REQUEST, "Invalid authentication request."),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "Invalid cookie operation."),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "Authentication failed."),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,

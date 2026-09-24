@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::create_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens),
+    paths(lobbies::create_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -26,7 +26,16 @@ struct ApiDoc;
 struct Security;
 impl Modify for Security {
     fn modify(&self, doc: &mut utoipa::openapi::OpenApi) {
-        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        use utoipa::openapi::security::{
+            ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme,
+        };
+        doc.components
+            .as_mut()
+            .expect("OpenAPI components")
+            .add_security_scheme(
+                "refresh_cookie",
+                SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("crescend_refresh"))),
+            );
         doc.components
             .as_mut()
             .expect("OpenAPI components")
@@ -54,5 +63,6 @@ pub fn router(jwt: JwtAuth) -> Router<AppState> {
             "/api/auth/refresh",
             axum::routing::post(auth::refresh_tokens),
         )
+        .route("/api/auth/logout", axum::routing::post(auth::logout))
         .nest("/api/youtube", youtube::router())
 }
