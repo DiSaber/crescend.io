@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::create_lobby, lobbies::join_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -81,14 +81,27 @@ mod lobby_documentation_tests {
     use super::*;
 
     #[test]
-    fn only_create_and_join_are_documented_with_the_response_contract() {
+    fn implemented_lobby_routes_are_documented_with_the_response_contract() {
         let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
         let paths = document["paths"].as_object().unwrap();
         let lobby_paths: Vec<_> = paths
             .keys()
             .filter(|p| p.starts_with("/api/lobbies"))
             .collect();
-        assert_eq!(lobby_paths, ["/api/lobbies", "/api/lobbies/join"]);
+        assert_eq!(
+            lobby_paths,
+            ["/api/lobbies", "/api/lobbies/current", "/api/lobbies/join"]
+        );
+        let current = &paths["/api/lobbies/current"]["get"];
+        assert!(current["requestBody"].is_null());
+        assert_eq!(current["security"][0]["bearer_auth"], serde_json::json!([]));
+        for status in ["200", "401", "500", "503"] {
+            assert!(current["responses"][status].is_object());
+        }
+        assert_eq!(
+            current["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CurrentLobby"
+        );
         let join = &paths["/api/lobbies/join"]["post"];
         for status in [
             "200", "400", "401", "404", "409", "413", "415", "500", "503",

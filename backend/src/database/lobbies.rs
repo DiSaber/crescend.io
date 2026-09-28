@@ -17,6 +17,68 @@ pub enum LobbyError {
 }
 
 impl Database {
+    pub async fn current_lobby(
+        &self,
+        user_id: i64,
+        clock: impl Fn() -> i64,
+    ) -> Result<CurrentLobby, LobbyError> {
+        // A deferred read transaction keeps membership, revision and roster in
+        // one SQLite snapshot without reserving the writer.
+        let mut tx = self.db_pool.begin().await?;
+        let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !account {
+            return Err(LobbyError::Unauthorized);
+        }
+        let now = timestamp(clock())?;
+        let row = sqlx::query("SELECT m.id AS membership_id, l.id, l.join_code, l.owner_user_id, l.created_at, l.expires_at, l.revision FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id WHERE m.user_id = ? AND l.closed_at IS NULL AND l.expires_at > ?")
+            .bind(user_id).bind(now).fetch_optional(&mut *tx).await?;
+        let mut view = CurrentLobby {
+            membership_id: None,
+            lobby: None,
+        };
+        if let Some(row) = row {
+            let id: LobbyId = row.try_get("id")?;
+            let owner: i64 = row.try_get("owner_user_id")?;
+            let revision: i64 = row.try_get("revision")?;
+            let members: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
+                .bind(id.as_str()).fetch_all(&mut *tx).await?;
+            view = CurrentLobby {
+                membership_id: Some(row.try_get("membership_id")?),
+                lobby: Some(LobbyView {
+                    id,
+                    join_code: row.try_get("join_code")?,
+                    owner_user_id: owner.to_string(),
+                    created_at: row.try_get("created_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                    revision: revision.to_string(),
+                    members: members
+                        .into_iter()
+                        .map(|(id, joined_at)| MemberView {
+                            user_id: id.to_string(),
+                            role: MemberRole::for_user(id, owner),
+                            joined_at,
+                        })
+                        .collect(),
+                }),
+            };
+        }
+        tx.commit().await?;
+        // Time may advance while reading or releasing the snapshot. Never
+        // return an active view at or after its deadline, even before cleanup.
+        if let Some(lobby) = &view.lobby {
+            if lobby.expires_at <= timestamp(clock())? {
+                return Ok(CurrentLobby {
+                    membership_id: None,
+                    lobby: None,
+                });
+            }
+        }
+        Ok(view)
+    }
+
     pub async fn join_lobby(
         &self,
         user_id: i64,

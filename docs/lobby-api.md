@@ -1,4 +1,4 @@
-# Lobby API: creation and joining (US1–US2)
+# Lobby API: creation, joining, and recovery (US1–US3)
 
 `POST /api/lobbies` creates a lobby and joins the authenticated account as its sole owner and first member in one transaction. The request body must be empty. Send the existing access token in the Authorization header; follow [browser authentication](browser-auth.md) to obtain it. The refresh cookie alone does not authorize this operation.
 
@@ -62,6 +62,30 @@ Retrying the same lobby returns the existing membership generation and current r
 
 Malformed JSON, missing fields, duplicate fields, wrong field types, and unknown fields return 400 `invalid_request`. A malformed normalized code returns 400 `invalid_join_code`. Bodies over 1 KiB return 413 `request_too_large`; missing or non-JSON Content-Type returns 415 `unsupported_media_type`. All join responses carry `Cache-Control: no-store`.
 
+## Recover current state
+
+Available after the US3 checkpoint, `GET /api/lobbies/current` returns **200 OK** with the authenticated account's current lobby, or `{ "membership_id": null, "lobby": null }`. Both fields are null together when membership is absent, closed, or expired, even before database cleanup. All responses carry `Cache-Control: no-store`.
+
+```js
+const response = await fetch('/api/lobbies/current', {
+  headers: { Authorization: `Bearer ${accessToken}` },
+  cache: 'no-store',
+});
+if (!response.ok) {
+  // Handle 401 through the existing browser authentication coordinator.
+  // A storage failure is not an empty membership result.
+  throw new Error(`Current lobby request failed: ${response.status}`);
+}
+const current = await response.json();
+if (current.membership_id === null && current.lobby === null) {
+  // Clear the client's in-memory lobby state.
+} else {
+  // Replace it with current, including the caller's membership generation.
+}
+```
+
+Use this read after reload, sign-in on another client, or a lost creation/join response. Clients for the same account recover the same generation; different members see the same roster but only their own membership ID. The server selects identity from the verified bearer token; no user-ID or lobby-ID selector is supported. Members are sorted by join time, then numeric user ID, with roles derived from the original owner. Each response is one coherent snapshot, including its revision. A concurrent join may appear in this read or the next. Live notifications arrive in US4.
+
 ## Shared errors and creation input errors
 
 | Status | Body / meaning |
@@ -76,7 +100,7 @@ Errors also carry no-store. Internal database diagnostics do not appear in respo
 
 ## Available increment and development setup
 
-Creation and joining are implemented. Current-lobby retrieval, SSE updates, leave, and creator-triggered closure remain planned; their endpoints are not registered or advertised in Scalar. Keep the create/join response in client state for now. A same-lobby join retry with the code recovers its current view; a dedicated recovery endpoint is planned for US3. Live updates are planned for US4.
+Creation, joining, and current-lobby retrieval are implemented. Scalar advertises these three routes. SSE updates, leave, and creator-triggered closure remain planned for later increments.
 
 The creation response replaces the prototype's 200/bare-string response. This development change uses a fresh database, without migrations. Stop the backend before removing its old `backend/data.db` and SQLite sidecars (`data.db-wal`, `data.db-shm`), then restart and sign in again. The implementation workflow performs this authorized reset once; do not delete the database on routine restarts. The new schema retains `expires_at`. Existing authentication schemas and browser credential handling are unchanged.
 
