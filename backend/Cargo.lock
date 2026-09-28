@@ -165,6 +165,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "dotenvy",
+ "futures-util",
  "jsonwebtoken",
  "openidconnect",
  "rand 0.10.3",

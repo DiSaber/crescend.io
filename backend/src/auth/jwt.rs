@@ -16,6 +16,7 @@ const AUDIENCE: &str = "crescend.io-api";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedUser {
     pub id: i64,
+    pub expires_at: i64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,7 +82,10 @@ impl JwtAuth {
             .sub
             .parse::<i64>()
             .map_err(|_| AuthError::Unauthorized)?;
-        Ok(AuthenticatedUser { id })
+        Ok(AuthenticatedUser {
+            id,
+            expires_at: claims.exp,
+        })
     }
 }
 
@@ -142,6 +146,7 @@ mod tests {
         let user = 42;
         let token = jwt.issue(user).unwrap();
         assert_eq!(jwt.verify(&token).unwrap().id, user);
+        assert_eq!(jwt.verify(&token).unwrap().expires_at, 4600);
         time.store(4599, Ordering::SeqCst);
         assert!(jwt.verify(&token).is_ok());
         time.store(4600, Ordering::SeqCst);
@@ -214,6 +219,14 @@ mod adapter_tests {
             .body(())
             .unwrap();
         let request = jwt.authorize(request).await.unwrap();
+        assert_eq!(
+            request
+                .extensions()
+                .get::<AuthenticatedUser>()
+                .unwrap()
+                .expires_at,
+            4600
+        );
         assert_eq!(
             request.extensions().get::<AuthenticatedUser>().unwrap().id,
             42

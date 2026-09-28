@@ -8,6 +8,7 @@ use sqlx::{Acquire, Row};
 #[derive(Debug)]
 pub enum LobbyError {
     Unauthorized,
+    MembershipForbidden,
     AlreadyInLobby,
     InvalidRequest,
     InvalidJoinCode,
@@ -16,7 +17,37 @@ pub enum LobbyError {
     Database(sqlx::Error),
 }
 
+#[derive(sqlx::FromRow)]
+pub(crate) struct StreamMembership {
+    pub lobby_id: LobbyId,
+    pub revision: i64,
+    pub expires_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
 impl Database {
+    pub(crate) async fn stream_membership(
+        &self,
+        user_id: i64,
+        membership_id: &str,
+    ) -> Result<Option<StreamMembership>, LobbyError> {
+        // One statement is one coherent snapshot; no roster or transaction is
+        // retained by the transport while it waits for a consumer.
+        Ok(sqlx::query_as("SELECT l.id AS lobby_id, l.revision, l.expires_at, l.closed_at FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ?")
+            .bind(membership_id).bind(user_id).fetch_optional(&self.db_pool).await?)
+    }
+
+    pub(crate) async fn require_lobby_account(&self, user_id: i64) -> Result<(), LobbyError> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
+            .bind(user_id)
+            .fetch_one(&self.db_pool)
+            .await?;
+        if exists {
+            Ok(())
+        } else {
+            Err(LobbyError::Unauthorized)
+        }
+    }
     pub async fn current_lobby(
         &self,
         user_id: i64,
@@ -79,6 +110,7 @@ impl Database {
         Ok(view)
     }
 
+    #[cfg(test)]
     pub async fn join_lobby(
         &self,
         user_id: i64,
@@ -91,13 +123,26 @@ impl Database {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn join_lobby_with(
         &self,
         user_id: i64,
         code: &str,
         clock: impl Fn() -> i64,
-        mut allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
+        allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
     ) -> Result<CurrentLobby, LobbyError> {
+        self.join_lobby_outcome_with(user_id, code, clock, allocate)
+            .await
+            .map(|(view, _)| view)
+    }
+
+    pub(crate) async fn join_lobby_outcome_with(
+        &self,
+        user_id: i64,
+        code: &str,
+        clock: impl Fn() -> i64,
+        mut allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
+    ) -> Result<(CurrentLobby, bool), LobbyError> {
         let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = timestamp(clock())?;
         let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
@@ -120,6 +165,7 @@ impl Database {
                 .bind(user_id)
                 .fetch_optional(&mut *tx)
                 .await?;
+        let changed = existing.is_none();
         let membership_id = if let Some((id, target)) = existing {
             if target != lobby_id {
                 return Err(LobbyError::AlreadyInLobby);
@@ -168,7 +214,7 @@ impl Database {
             }),
         };
         tx.commit().await?;
-        Ok(view)
+        Ok((view, changed))
     }
 
     pub(super) async fn create_lobby_tables(&self) -> Result<(), sqlx::Error> {
