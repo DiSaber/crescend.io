@@ -5,7 +5,7 @@ use axum::{
     extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 
 use crate::{
@@ -17,7 +17,29 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(create_lobby))
+        .route("/current", get(current_lobby))
         .route("/join", post(join_lobby).layer(DefaultBodyLimit::max(1024)))
+}
+
+#[utoipa::path(
+    get, path = "/api/lobbies/current", tag = "Lobbies",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Coherent current lobby or paired null membership_id and lobby", body = CurrentLobby),
+        (status = 401, description = "Missing, invalid or expired token, or nonexistent account", body = ErrorResponse),
+        (status = 500, description = "Current state could not be read", body = ErrorResponse),
+        (status = 503, description = "Current state temporarily unavailable", body = ErrorResponse)
+    )
+)]
+async fn current_lobby(
+    State(app_state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+) -> Result<Json<CurrentLobby>, LobbyError> {
+    app_state
+        .database
+        .current_lobby(user.id, || (app_state.auth.clock)())
+        .await
+        .map(Json)
 }
 
 #[utoipa::path(
