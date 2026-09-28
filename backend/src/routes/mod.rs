@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::create_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(lobbies::create_lobby, lobbies::join_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -81,14 +81,27 @@ mod lobby_documentation_tests {
     use super::*;
 
     #[test]
-    fn only_creation_is_documented_with_the_new_response_contract() {
+    fn only_create_and_join_are_documented_with_the_response_contract() {
         let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
         let paths = document["paths"].as_object().unwrap();
         let lobby_paths: Vec<_> = paths
             .keys()
             .filter(|p| p.starts_with("/api/lobbies"))
             .collect();
-        assert_eq!(lobby_paths, ["/api/lobbies"]);
+        assert_eq!(lobby_paths, ["/api/lobbies", "/api/lobbies/join"]);
+        let join = &paths["/api/lobbies/join"]["post"];
+        for status in [
+            "200", "400", "401", "404", "409", "413", "415", "500", "503",
+        ] {
+            assert!(
+                join["responses"][status].is_object(),
+                "missing join {status}"
+            );
+        }
+        assert_eq!(
+            join["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/JoinLobbyRequest"
+        );
         let operation = &paths["/api/lobbies"]["post"];
         assert!(operation["requestBody"].is_null());
         assert!(operation["responses"]["200"].is_null());
@@ -110,6 +123,7 @@ mod lobby_documentation_tests {
             "MemberRole",
             "LobbyId",
             "MembershipId",
+            "JoinLobbyRequest",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }

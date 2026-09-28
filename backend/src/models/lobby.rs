@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use rand::TryRng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Stable lobby identity, independent of the short invitation code.
@@ -28,6 +28,14 @@ impl LobbyId {
 pub struct MembershipId(String);
 
 impl MembershipId {
+    pub fn random() -> Result<Self, ()> {
+        let mut bytes = [0; 16];
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|_| ())?;
+        Ok(Self::from_bytes(bytes))
+    }
+
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(base16ct::lower::encode_string(&bytes))
     }
@@ -119,4 +127,21 @@ pub struct LobbyView {
 pub struct CurrentLobby {
     pub membership_id: Option<MembershipId>,
     pub lobby: Option<LobbyView>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JoinLobbyRequest {
+    /// Six ASCII letters/digits, ignoring surrounding ASCII whitespace and case.
+    pub join_code: String,
+}
+
+impl JoinLobbyRequest {
+    pub fn normalized_code(&self) -> Option<String> {
+        let code = self.join_code.trim_matches(|c: char| {
+            matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{000b}' | '\u{000c}')
+        });
+        (code.len() == 6 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .then(|| code.to_ascii_uppercase())
+    }
 }

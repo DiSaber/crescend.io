@@ -1,4 +1,4 @@
-# Lobby API: creation (US1)
+# Lobby API: creation and joining (US1–US2)
 
 `POST /api/lobbies` creates a lobby and joins the authenticated account as its sole owner and first member in one transaction. The request body must be empty. Send the existing access token in the Authorization header; follow [browser authentication](browser-auth.md) to obtain it. The refresh cookie alone does not authorize this operation.
 
@@ -37,21 +37,46 @@ The lobby ID and caller's membership ID are independent 128-bit identifiers repr
 
 A user can belong to at most one active lobby. Creation while already in a lobby returns 409, including retries after a successful response was lost. A lobby expires exactly 24 hours after creation. An expired membership does not block creating a new lobby, even before periodic cleanup removes its rows. Disconnecting, signing out, or restarting the backend does not remove unexpired membership.
 
-## Errors
+## Join by code
+
+`POST /api/lobbies/join` accepts a JSON object containing only `join_code`, with a maximum body size of 1 KiB:
+
+```js
+const response = await fetch('/api/lobbies/join', {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ join_code: '  a1b2c3  ' }),
+});
+const result = await response.json();
+if (response.ok) {
+  // Replace the in-memory lobby state with result.
+}
+```
+
+The server trims surrounding ASCII whitespace and ignores ASCII letter case, then requires six letters/digits. Success returns **200 OK** with the same CurrentLobby shape shown above, including the caller's membership ID and the complete roster. A new join adds one `member`, increments revision once, and preserves the original owner and expiration. Membership grants no administration permissions; ownership cannot be requested or transferred.
+
+Retrying the same lobby returns the existing membership generation and current roster without changing revision. This also applies to the creator. Joining another active lobby returns 409 without moving the caller. Unknown, closed, and expired codes all return the same 404 `lobby_unavailable` response without roster information. A stale membership from a closed or expired lobby does not block joining an active lobby.
+
+Malformed JSON, missing fields, duplicate fields, wrong field types, and unknown fields return 400 `invalid_request`. A malformed normalized code returns 400 `invalid_join_code`. Bodies over 1 KiB return 413 `request_too_large`; missing or non-JSON Content-Type returns 415 `unsupported_media_type`. All join responses carry `Cache-Control: no-store`.
+
+## Shared errors and creation input errors
 
 | Status | Body / meaning |
 | --- | --- |
 | 400 | `{"error":"This operation requires an empty request body.","code":"invalid_request"}` |
 | 401 | `{"error":"Authentication failed.","code":"unauthorized"}`; missing/invalid/expired token or account no longer exists; `WWW-Authenticate: Bearer` |
 | 409 | `{"error":"You already belong to an active lobby.","code":"already_in_lobby"}` |
-| 500 | `{"error":"Lobby creation could not be completed.","code":"internal_error"}`; transaction fails without partial membership/lobby |
-| 503 | `{"error":"Lobby creation is temporarily unavailable.","code":"temporarily_unavailable"}`; temporary database contention/pool exhaustion or ID/code allocation failure |
+| 500 | `{"error":"Lobby operation could not be completed.","code":"internal_error"}`; transaction fails without partial membership/lobby |
+| 503 | `{"error":"Lobby operation is temporarily unavailable.","code":"temporarily_unavailable"}`; temporary database contention/pool exhaustion or ID/code allocation failure |
 
 Errors also carry no-store. Internal database diagnostics do not appear in response bodies. Creation is not a way to switch lobbies. Do not expect a second lobby when retrying after an uncertain response.
 
 ## Available increment and development setup
 
-Only creation is implemented in US1. Join, current-lobby retrieval, SSE updates, leave, and creator-triggered closure remain planned; their endpoints are not registered or advertised in Scalar. Keep the creation response in client state for now. After losing it, there is no recovery endpoint in this increment; one is planned for US3.
+Creation and joining are implemented. Current-lobby retrieval, SSE updates, leave, and creator-triggered closure remain planned; their endpoints are not registered or advertised in Scalar. Keep the create/join response in client state for now. A same-lobby join retry with the code recovers its current view; a dedicated recovery endpoint is planned for US3. Live updates are planned for US4.
 
 The creation response replaces the prototype's 200/bare-string response. This development change uses a fresh database, without migrations. Stop the backend before removing its old `backend/data.db` and SQLite sidecars (`data.db-wal`, `data.db-shm`), then restart and sign in again. The implementation workflow performs this authorized reset once; do not delete the database on routine restarts. The new schema retains `expires_at`. Existing authentication schemas and browser credential handling are unchanged.
 

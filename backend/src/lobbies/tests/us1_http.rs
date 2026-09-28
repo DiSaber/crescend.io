@@ -141,7 +141,6 @@ async fn database_contention_is_temporary_failure() {
 async fn later_story_routes_are_not_available() {
     let f = Fixture::new().await;
     for (method, suffix) in [
-        (reqwest::Method::POST, "/join"),
         (reqwest::Method::GET, "/current"),
         (
             reqwest::Method::GET,

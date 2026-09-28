@@ -1,18 +1,114 @@
 use super::Database;
-use crate::models::lobby::{CurrentLobby, LobbyAllocation, LobbyView, MemberRole, MemberView};
+use crate::models::lobby::{
+    CurrentLobby, LobbyAllocation, LobbyId, LobbyView, MemberRole, MemberView, MembershipId,
+};
 use chrono::{DateTime, Datelike, TimeDelta, Utc};
-use sqlx::Acquire;
+use sqlx::{Acquire, Row};
 
 #[derive(Debug)]
 pub enum LobbyError {
     Unauthorized,
     AlreadyInLobby,
     InvalidRequest,
+    InvalidJoinCode,
+    LobbyUnavailable,
     Unavailable,
     Database(sqlx::Error),
 }
 
 impl Database {
+    pub async fn join_lobby(
+        &self,
+        user_id: i64,
+        code: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<CurrentLobby, LobbyError> {
+        self.join_lobby_with(user_id, code, clock, || {
+            MembershipId::random().map_err(|_| LobbyError::Unavailable)
+        })
+        .await
+    }
+
+    pub(crate) async fn join_lobby_with(
+        &self,
+        user_id: i64,
+        code: &str,
+        clock: impl Fn() -> i64,
+        mut allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
+    ) -> Result<CurrentLobby, LobbyError> {
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = timestamp(clock())?;
+        let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !account {
+            return Err(LobbyError::Unauthorized);
+        }
+        let lobby = sqlx::query("SELECT id, join_code, owner_user_id, created_at, expires_at, revision FROM lobbies WHERE join_code = ? AND closed_at IS NULL AND expires_at > ?")
+            .bind(code).bind(now).fetch_optional(&mut *tx).await?
+            .ok_or(LobbyError::LobbyUnavailable)?;
+        let lobby_id: LobbyId = lobby.try_get("id")?;
+        let owner: i64 = lobby.try_get("owner_user_id")?;
+        let mut revision: i64 = lobby.try_get("revision")?;
+        sqlx::query("DELETE FROM lobby_memberships WHERE user_id = ? AND lobby_id IN (SELECT id FROM lobbies WHERE closed_at IS NOT NULL OR expires_at <= ?)")
+            .bind(user_id).bind(now).execute(&mut *tx).await?;
+        let existing: Option<(MembershipId, LobbyId)> =
+            sqlx::query_as("SELECT id, lobby_id FROM lobby_memberships WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let membership_id = if let Some((id, target)) = existing {
+            if target != lobby_id {
+                return Err(LobbyError::AlreadyInLobby);
+            }
+            id
+        } else {
+            let mut allocated = None;
+            for _ in 0..8 {
+                let id = allocate()?;
+                let inserted = sqlx::query("INSERT INTO lobby_memberships (id, user_id, lobby_id, joined_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+                    .bind(id.as_str()).bind(user_id).bind(lobby_id.as_str()).bind(now)
+                    .execute(&mut *tx).await?.rows_affected();
+                if inserted == 1 {
+                    allocated = Some(id);
+                    break;
+                }
+            }
+            let id = allocated.ok_or(LobbyError::Unavailable)?;
+            revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
+            sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+                .bind(revision)
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+            id
+        };
+        let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
+            .bind(lobby_id.as_str()).fetch_all(&mut *tx).await?;
+        let view = CurrentLobby {
+            membership_id: Some(membership_id),
+            lobby: Some(LobbyView {
+                id: lobby_id,
+                join_code: lobby.try_get("join_code")?,
+                owner_user_id: owner.to_string(),
+                created_at: lobby.try_get("created_at")?,
+                expires_at: lobby.try_get("expires_at")?,
+                revision: revision.to_string(),
+                members: rows
+                    .into_iter()
+                    .map(|(id, joined_at)| MemberView {
+                        user_id: id.to_string(),
+                        role: MemberRole::for_user(id, owner),
+                        joined_at,
+                    })
+                    .collect(),
+            }),
+        };
+        tx.commit().await?;
+        Ok(view)
+    }
+
     pub(super) async fn create_lobby_tables(&self) -> Result<(), sqlx::Error> {
         let mut tx = self.db_pool.begin().await?;
         sqlx::query(
