@@ -10,14 +10,12 @@ pub use config::AuthConfig;
 pub use jwt::{AuthenticatedUser, JwtAuth, TOKEN_SECONDS};
 pub use transactions::LOGIN_SECONDS;
 
+use crate::api_error::ApiError;
 use axum::{
-    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
 use std::sync::Arc;
-use utoipa::ToSchema;
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
@@ -55,11 +53,6 @@ pub enum AuthError {
     Internal,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: &'static str,
-}
-
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, error) = match self {
@@ -75,7 +68,14 @@ impl IntoResponse for AuthError {
                 "Authentication could not be completed.",
             ),
         };
-        (status, Json(ErrorResponse { error })).into_response()
+        let code = match self {
+            Self::BadRequest => "invalid_request",
+            Self::Forbidden => "forbidden",
+            Self::Unauthorized => "unauthorized",
+            Self::Unavailable => "temporarily_unavailable",
+            Self::Internal => "internal_error",
+        };
+        ApiError::new(status, code, error).into_response()
     }
 }
 

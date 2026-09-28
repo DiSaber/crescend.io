@@ -52,9 +52,20 @@ const response = await fetch('/api/lobbies', {
   method: 'POST',
   headers: { Authorization: `Bearer ${accessToken}` },
 });
+if (response.status === 201) {
+  const { membership_id, lobby } = await response.json();
+  // lobby.join_code is the invitation code; this account is its owner and first member.
+  // Retain this response in client state; current-lobby retrieval comes in a later increment.
+} else if (response.status === 409) {
+  // This account already belongs to an active lobby; retrying will not create another.
+} else {
+  throw new Error(`Lobby creation failed: ${response.status}`);
+}
 ```
 
 The refresh cookie does not authorize lobby creation. Refresh and logout do not require a bearer token or contact Google. HttpOnly hides the refresh credential from scripts, but does not stop same-origin XSS from making requests.
+
+Lobby creation requires an empty body and now returns **201** with an object, replacing the old 200/string response. The creator is the sole owner and first member, and the lobby expires 24 hours after creation. See [lobby API](lobby-api.md) for the response and errors. The development database reset for this change discards old accounts and refresh sessions; sign in again after upgrading. Joining, current-lobby retrieval, updates, and leaving will be delivered in later increments.
 
 ## Serialize refresh and logout
 

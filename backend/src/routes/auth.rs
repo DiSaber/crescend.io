@@ -1,7 +1,8 @@
+use crate::api_error::ErrorResponse;
 use crate::{
     app_state::AppState,
     auth::{
-        AuthConfig, AuthError, ErrorResponse, LOGIN_SECONDS, browser,
+        AuthConfig, AuthError, LOGIN_SECONDS, browser,
         refresh::{self, RefreshCredential, Rotation, TokenResponse},
     },
 };

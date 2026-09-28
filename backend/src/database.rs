@@ -1,12 +1,13 @@
 use std::{str::FromStr, time::Duration};
 
-use chrono::{DateTime, Utc};
+pub mod lobbies;
+
+use chrono::{DateTime, Timelike, Utc};
 use sqlx::{
     SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 
-use crate::models::lobby::Lobby;
 use crate::models::user::User;
 
 pub const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
@@ -34,26 +35,19 @@ impl Database {
         let opts = SqliteConnectOptions::from_str("sqlite://data.db")
             .expect("Url should be valid")
             .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(1))
             .create_if_missing(true);
-        let db_pool = SqlitePool::connect_with(opts).await?;
+        let db_pool = SqlitePoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_with(opts)
+            .await?;
 
         Ok(Self { db_pool })
     }
 
     /// Creates the db tables when they don't exist.
     pub async fn create_tables(&self) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS lobbies (
-                id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 3),
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL CHECK (expires_at >= created_at)
-            ) STRICT
-            "#,
-        )
-        .execute(&self.db_pool)
-        .await?;
-
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY NOT NULL,
@@ -85,6 +79,7 @@ impl Database {
         .execute(&self.db_pool)
         .await?;
 
+        self.create_lobby_tables().await?;
         Ok(())
     }
 
@@ -198,25 +193,9 @@ impl Database {
         Ok(())
     }
 
-    pub async fn create_lobby(&self, lobby: Lobby) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"
-            INSERT INTO lobbies (id, created_at, expires_at)
-            VALUES (?, ?, ?)
-            "#,
-        )
-        .bind(lobby.id)
-        .bind(lobby.created_at)
-        .bind(lobby.expires_at)
-        .execute(&self.db_pool)
-        .await?;
-
-        Ok(())
-    }
-
     pub async fn delete_expired_lobbies(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {
         let result = sqlx::query("DELETE FROM lobbies WHERE expires_at <= ?")
-            .bind(now)
+            .bind(now.with_nanosecond(0).expect("zero nanoseconds are valid"))
             .execute(&self.db_pool)
             .await?;
 
