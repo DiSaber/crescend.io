@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(lobbies::events, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -90,9 +90,20 @@ mod lobby_documentation_tests {
             .collect();
         assert_eq!(
             lobby_paths,
-            ["/api/lobbies", "/api/lobbies/current", "/api/lobbies/join"]
+            [
+                "/api/lobbies",
+                "/api/lobbies/current",
+                "/api/lobbies/join",
+                "/api/lobbies/memberships/{membership_id}/events"
+            ]
         );
         let current = &paths["/api/lobbies/current"]["get"];
+        let events = &paths["/api/lobbies/memberships/{membership_id}/events"]["get"];
+        assert_eq!(events["security"][0]["bearer_auth"], serde_json::json!([]));
+        assert!(events["responses"]["200"]["content"]["text/event-stream"].is_object());
+        for status in ["400", "401", "403", "500", "503"] {
+            assert!(events["responses"][status].is_object());
+        }
         assert!(current["requestBody"].is_null());
         assert_eq!(current["security"][0]["bearer_auth"], serde_json::json!([]));
         for status in ["200", "401", "500", "503"] {

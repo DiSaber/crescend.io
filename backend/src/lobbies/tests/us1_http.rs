@@ -140,16 +140,10 @@ async fn database_contention_is_temporary_failure() {
 #[tokio::test]
 async fn later_story_routes_are_not_available() {
     let f = Fixture::new().await;
-    for (method, suffix) in [
-        (
-            reqwest::Method::GET,
-            "/memberships/11111111111111111111111111111111/events",
-        ),
-        (
-            reqwest::Method::DELETE,
-            "/memberships/11111111111111111111111111111111",
-        ),
-    ] {
+    for (method, suffix) in [(
+        reqwest::Method::DELETE,
+        "/memberships/11111111111111111111111111111111",
+    )] {
         let response = f
             .client
             .request(method, format!("{}/api/lobbies{suffix}", f.base))

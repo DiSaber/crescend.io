@@ -19,10 +19,13 @@ mod us1_storage;
 mod us2_http;
 mod us2_storage;
 mod us3_current;
+mod us4_events;
+mod us4_recovery;
 
 const NOW: i64 = 1_800_000_000;
 
 struct Fixture {
+    updates: crate::lobbies::updates::LobbyUpdates,
     database: Database,
     auth: Arc<Auth>,
     time: Arc<AtomicI64>,
@@ -78,8 +81,10 @@ impl Fixture {
         let auth = Arc::new(
             Auth::with_clock(config, Arc::new(move || clock.load(Ordering::SeqCst))).unwrap(),
         );
+        let updates = crate::lobbies::updates::LobbyUpdates::default();
         let app = crate::routes::router(auth.jwt.clone()).with_state(AppState {
             database: database.clone(),
+            lobby_updates: updates.clone(),
             auth: auth.clone(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -88,6 +93,7 @@ impl Fixture {
             axum::serve(listener, app).await.unwrap();
         });
         Self {
+            updates,
             database,
             auth,
             time,

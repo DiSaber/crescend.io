@@ -27,7 +27,11 @@ async fn main() {
         .expect("Database tables should be created");
     database.start_cleanup();
 
-    let app = routes::router(auth.jwt.clone()).with_state(AppState { database, auth });
+    let app = routes::router(auth.jwt.clone()).with_state(AppState {
+        database,
+        auth,
+        lobby_updates: Default::default(),
+    });
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("listening on {}", listener.local_addr().unwrap());

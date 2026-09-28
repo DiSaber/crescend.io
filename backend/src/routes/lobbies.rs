@@ -2,7 +2,7 @@ use crate::api_error::{ApiError, ErrorResponse};
 use crate::database::lobbies::LobbyError;
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -18,7 +18,54 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(create_lobby))
         .route("/current", get(current_lobby))
+        .route("/memberships/{membership_id}/events", get(events))
         .route("/join", post(join_lobby).layer(DefaultBodyLimit::max(1024)))
+}
+
+#[utoipa::path(
+    get, path = "/api/lobbies/memberships/{membership_id}/events", tag = "Lobbies",
+    security(("bearer_auth" = [])),
+    params(("membership_id" = String, Path, description = "Caller membership generation: 32 lowercase hex characters")),
+    responses(
+        (status = 200, description = "SSE sync_required/lobby_changed revision hints; auth_expired or membership_ended expired terminates access. Refetch current state after hints.", content_type = "text/event-stream", body = String),
+        (status = 400, description = "Malformed membership ID", body = ErrorResponse),
+        (status = 401, description = "Authentication required", body = ErrorResponse),
+        (status = 403, description = "Absent, ended or foreign membership", body = ErrorResponse),
+        (status = 500, description = "Storage failure", body = ErrorResponse),
+        (status = 503, description = "Storage temporarily unavailable", body = ErrorResponse)
+    )
+)]
+async fn events(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Result<Response, LobbyError> {
+    let id = path.map_err(|_| LobbyError::InvalidRequest)?.0;
+    if id.len() != 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(LobbyError::InvalidRequest);
+    }
+    let receiver = app.lobby_updates.subscribe();
+    app.database.require_lobby_account(user.id).await?;
+    let bound = app
+        .database
+        .stream_membership(user.id, &id)
+        .await?
+        .filter(|s| s.closed_at.is_none() && s.expires_at.timestamp() > (app.auth.clock)())
+        .ok_or(LobbyError::MembershipForbidden)?;
+    if (app.auth.clock)() >= user.expires_at {
+        return Err(LobbyError::Unauthorized);
+    }
+    let stream = crate::lobbies::updates::Connection::new(app, user, id, bound, receiver).stream();
+    let mut response = axum::response::Sse::new(stream).into_response();
+    response.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(response)
 }
 
 #[utoipa::path(
@@ -90,10 +137,20 @@ async fn join_lobby(
     };
     match app_state
         .database
-        .join_lobby(user.id, &code, || (app_state.auth.clock)())
+        .join_lobby_outcome_with(
+            user.id,
+            &code,
+            || (app_state.auth.clock)(),
+            || crate::models::lobby::MembershipId::random().map_err(|_| LobbyError::Unavailable),
+        )
         .await
     {
-        Ok(view) => Json(view).into_response(),
+        Ok((view, changed)) => {
+            if changed {
+                publish(&app_state, &view);
+            }
+            Json(view).into_response()
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -128,12 +185,27 @@ async fn create_lobby(
         .database
         .create_owned_lobby(user.id, || (app_state.auth.clock)())
         .await?;
+    publish(&app_state, &view);
     Ok((StatusCode::CREATED, Json(view)))
+}
+
+fn publish(app: &AppState, view: &CurrentLobby) {
+    if let Some(lobby) = &view.lobby {
+        app.lobby_updates.publish(
+            lobby.id.clone(),
+            lobby.revision.parse().expect("database revision"),
+        );
+    }
 }
 
 impl IntoResponse for LobbyError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
+            Self::MembershipForbidden => (
+                StatusCode::FORBIDDEN,
+                "membership_forbidden",
+                "Membership is not available.",
+            ),
             Self::Unauthorized => {
                 let mut response = crate::auth::AuthError::Unauthorized.into_response();
                 response.headers_mut().insert(
@@ -150,7 +222,7 @@ impl IntoResponse for LobbyError {
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                "This operation requires an empty request body.",
+                "Invalid request body or membership ID.",
             ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
