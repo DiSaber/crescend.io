@@ -16,6 +16,8 @@ use std::{
 
 mod us1_http;
 mod us1_storage;
+mod us2_http;
+mod us2_storage;
 
 const NOW: i64 = 1_800_000_000;
 
