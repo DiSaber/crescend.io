@@ -8,3 +8,15 @@
 *.db-shm
 *.db-wal
 *.sqlite
+
+# Rust build artifacts and local editor files
+target/
+*.rs.bk
+*.rlib
+*.prof*
+*.log
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp

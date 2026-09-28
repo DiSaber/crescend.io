@@ -229,13 +229,8 @@ mod tests {
     #[tokio::test]
     async fn issuance_stores_only_hashes_and_preserves_identity_and_existing_data() {
         let f = Fixture::new().await;
-        let now = chrono::Utc::now();
         f.database
-            .create_lobby(crate::models::lobby::Lobby {
-                id: crate::models::lobby::LobbyId::new([1, 2, 3]),
-                created_at: now,
-                expires_at: now + chrono::Duration::minutes(1),
-            })
+            .create_owned_lobby(f.user, || (f.clock)())
             .await
             .unwrap();
         let first = f.issue().await;

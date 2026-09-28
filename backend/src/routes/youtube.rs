@@ -1,3 +1,4 @@
+use crate::api_error::{ApiError, ErrorResponse};
 use axum::{
     Json, Router,
     http::StatusCode,
@@ -34,16 +35,17 @@ struct OEmbedResponse {
     request_body = MetadataRequest,
     responses(
         (status = 200, description = "Video metadata retrieved", body = VideoMetadata),
-        (status = 400, description = "Malformed JSON request body", body = String, content_type = "text/plain"),
-        (status = 413, description = "Request body exceeds the size limit", body = String, content_type = "text/plain"),
-        (status = 415, description = "Missing or unsupported JSON content type", body = String, content_type = "text/plain"),
-        (status = 422, description = "Invalid YouTube video URL or JSON does not match the request schema", body = String, content_type = "text/plain"),
-        (status = 502, description = "YouTube metadata service could not be reached or metadata is unavailable", body = String, content_type = "text/plain")
+        (status = 400, description = "Malformed JSON request body", body = ErrorResponse),
+        (status = 413, description = "Request body exceeds the size limit", body = ErrorResponse),
+        (status = 415, description = "Missing or unsupported JSON content type", body = ErrorResponse),
+        (status = 422, description = "Invalid YouTube video URL or JSON does not match the request schema", body = ErrorResponse),
+        (status = 502, description = "YouTube metadata service could not be reached or metadata is unavailable", body = ErrorResponse)
     )
 )]
 async fn metadata(
-    Json(request): Json<MetadataRequest>,
+    request: Result<Json<MetadataRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<VideoMetadata>, YoutubeError> {
+    let Json(request) = request.map_err(YoutubeError::Json)?;
     let video = YouTubeVideo::parse(&request.url).ok_or(YoutubeError::InvalidUrl)?;
     let endpoint = Url::parse_with_params(
         OEMBED_ENDPOINT,
@@ -132,6 +134,7 @@ impl YouTubeVideo {
 
 #[derive(Debug)]
 enum YoutubeError {
+    Json(axum::extract::rejection::JsonRejection),
     InvalidUrl,
     Service,
     Unavailable,
@@ -139,29 +142,86 @@ enum YoutubeError {
 
 impl IntoResponse for YoutubeError {
     fn into_response(self) -> Response {
-        match self {
+        let (status, code, message) = match self {
+            Self::Json(rejection) => match rejection.status() {
+                StatusCode::PAYLOAD_TOO_LARGE => (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    "Request body exceeds the size limit.",
+                ),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE => (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "unsupported_media_type",
+                    "A JSON content type is required.",
+                ),
+                StatusCode::UNPROCESSABLE_ENTITY => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid_request",
+                    "JSON does not match the request schema.",
+                ),
+                _ => (
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Malformed JSON request body.",
+                ),
+            },
             Self::InvalidUrl => (
                 StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_url",
                 "The URL must be a valid YouTube video link.",
-            )
-                .into_response(),
+            ),
             Self::Service => (
                 StatusCode::BAD_GATEWAY,
+                "upstream_unavailable",
                 "The YouTube metadata service could not be reached.",
-            )
-                .into_response(),
+            ),
             Self::Unavailable => (
                 StatusCode::BAD_GATEWAY,
+                "metadata_unavailable",
                 "YouTube metadata is unavailable for this video.",
-            )
-                .into_response(),
-        }
+            ),
+        };
+        ApiError::new(status, code, message).into_response()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::YouTubeVideo;
+
+    #[tokio::test]
+    async fn request_rejections_use_shared_json_errors() {
+        use axum::{extract::FromRequest, response::IntoResponse};
+        for (body, content_type, status, code) in [
+            ("{", Some("application/json"), 400, "invalid_request"),
+            ("{}", Some("application/json"), 422, "invalid_request"),
+            ("{}", None, 415, "unsupported_media_type"),
+            (
+                r#"{"url":"https://example.com"}"#,
+                Some("application/json"),
+                422,
+                "invalid_url",
+            ),
+        ] {
+            let mut request = axum::http::Request::builder();
+            if let Some(content_type) = content_type {
+                request = request.header("content-type", content_type);
+            }
+            let request = request.body(axum::body::Body::from(body)).unwrap();
+            let extracted =
+                axum::Json::<crate::models::youtube::MetadataRequest>::from_request(request, &())
+                    .await;
+            let response = super::metadata(extracted).await.into_response();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()["content-type"], "application/json");
+            let bytes = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["code"], code);
+            assert!(value["error"].is_string());
+        }
+    }
 
     #[test]
     fn normalizes_supported_video_links() {

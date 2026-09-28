@@ -1,6 +1,8 @@
+mod api_error;
 mod app_state;
 mod auth;
 mod database;
+mod lobbies;
 mod models;
 mod routes;
 

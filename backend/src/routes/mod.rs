@@ -54,7 +54,8 @@ impl Modify for Security {
 pub fn router(jwt: JwtAuth) -> Router<AppState> {
     let protected = Router::new()
         .nest("/api/lobbies", lobbies::router())
-        .route_layer(AsyncRequireAuthorizationLayer::new(jwt));
+        .route_layer(AsyncRequireAuthorizationLayer::new(jwt))
+        .layer(axum::middleware::map_response(lobby_no_store));
     Router::new()
         .merge(Scalar::with_url("/scalar", ApiDoc::openapi()))
         .merge(protected)
@@ -65,4 +66,52 @@ pub fn router(jwt: JwtAuth) -> Router<AppState> {
         )
         .route("/api/auth/logout", axum::routing::post(auth::logout))
         .nest("/api/youtube", youtube::router())
+}
+
+async fn lobby_no_store(mut response: axum::response::Response) -> axum::response::Response {
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+#[cfg(test)]
+mod lobby_documentation_tests {
+    use super::*;
+
+    #[test]
+    fn only_creation_is_documented_with_the_new_response_contract() {
+        let document = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let paths = document["paths"].as_object().unwrap();
+        let lobby_paths: Vec<_> = paths
+            .keys()
+            .filter(|p| p.starts_with("/api/lobbies"))
+            .collect();
+        assert_eq!(lobby_paths, ["/api/lobbies"]);
+        let operation = &paths["/api/lobbies"]["post"];
+        assert!(operation["requestBody"].is_null());
+        assert!(operation["responses"]["200"].is_null());
+        for status in ["201", "400", "401", "409", "500", "503"] {
+            assert!(
+                operation["responses"][status].is_object(),
+                "missing {status}"
+            );
+        }
+        assert_eq!(
+            operation["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/CurrentLobby"
+        );
+        let schemas = document["components"]["schemas"].as_object().unwrap();
+        for name in [
+            "CurrentLobby",
+            "LobbyView",
+            "MemberView",
+            "MemberRole",
+            "LobbyId",
+            "MembershipId",
+        ] {
+            assert!(schemas.contains_key(name), "missing schema {name}");
+        }
+    }
 }
