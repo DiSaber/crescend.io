@@ -1,4 +1,4 @@
-# Lobby API: creation, joining, and recovery (US1–US3)
+# Lobby API: membership, live updates, and departure (US1–US5)
 
 `POST /api/lobbies` creates a lobby and joins the authenticated account as its sole owner and first member in one transaction. The request body must be empty. Send the existing access token in the Authorization header; follow [browser authentication](browser-auth.md) to obtain it. The refresh cookie alone does not authorize this operation.
 
@@ -97,6 +97,8 @@ The server checks account, generation ownership and lobby activity before return
 | `sync_required` | `{"revision":"1"}` | Refetch current state on every connection |
 | `lobby_changed` | `{"revision":"2"}` | Coalesce hints and refetch current state |
 | `membership_ended` | `{"reason":"expired"}` | Clear this generation and close |
+| `membership_ended` | `{"reason":"left"}` | Clear the departed generation and close |
+| `membership_ended` | `{"reason":"closed"}` | Clear this lobby and close; its creator left |
 | `auth_expired` | `{}` | Close and recover authentication through the existing coordinator |
 
 Events contain no roster, invitation code, or other account's generation. Comments keep an authorized connection alive every 15 seconds. Expiration ends idle streams independently of database cleanup. Disconnecting does not change membership. One-second reconciliation recovers committed changes even if their post-commit notification was lost. Notifications are not a durable event log; `Last-Event-ID` does not replay history.
@@ -161,9 +163,35 @@ Disable buffering and caching in any reverse proxy for this route, forward `X-Ac
 
 Errors also carry no-store. Internal database diagnostics do not appear in response bodies. Creation is not a way to switch lobbies. Do not expect a second lobby when retrying after an uncertain response.
 
+## Leave, retry, and rejoin
+
+Send an empty-body `DELETE /api/lobbies/memberships/{membership_id}` with the usual bearer token. Capture the generation from the current view when the user chooses to leave:
+
+```js
+const departingGeneration = currentLobby.membership_id;
+const response = await fetch(
+  `/api/lobbies/memberships/${departingGeneration}`,
+  { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } },
+);
+if (response.status === 204) {
+  // No JSON response body. Clear/abort only the departing generation.
+  // Refetch /api/lobbies/current to discover state changed by another client.
+}
+```
+
+An ordinary departure removes only that member and increments the lobby revision once. Remaining members receive `lobby_changed` and refetch the roster; the owner stays unchanged. Every connected client using the departed generation receives `membership_ended` with reason `left`, then the stream closes. That generation can no longer open a stream. The departing account immediately becomes eligible to create or join another lobby.
+
+If the response is lost, retry the **same captured generation**. An absent, previously closed, or expired own generation returns **204 No Content** without another logical change or notification. Never substitute the latest membership ID into an old retry. An extant generation belonging to another account returns **403** `membership_forbidden`, even if expired; malformed IDs or a nonempty body return **400** `invalid_request`. All responses carry `Cache-Control: no-store`.
+
+To rejoin an active lobby, send its code to `POST /api/lobbies/join` again. The new view has a fresh membership ID and the ordinary `member` role. Open a new stream for that generation. Replaying the previous DELETE leaves the new membership intact, including when the account has joined a different lobby. Discard old stream events and in-flight responses associated with the departed generation.
+
+The **creator uses the same DELETE operation**, but their departure closes the lobby for everyone atomically. All memberships are removed, the old code becomes unavailable (404 on join), and connected clients receive `membership_ended` with reason `closed`. Current state returns paired nulls unless an account has already established another membership. Everyone can immediately create or join another lobby. Ownership never transfers, and the scheduled `expires_at` remains unchanged. Failed departures or closures preserve all prior state and publish no successful update.
+
+Disconnecting, closing a tab, or signing out does not leave or close a lobby. There is no separate close or administration endpoint. Closure records remain until scheduled expiry cleanup so connected clients can recover the correct terminal reason even if a wakeup is missed.
+
 ## Available increment and development setup
 
-Creation, joining, current-lobby retrieval, and membership event streams are implemented. Scalar advertises these four routes. Explicit leave and creator-triggered closure remain deferred to US5.
+Creation, joining, current-lobby retrieval, membership event streams, and explicit leave are implemented. Scalar advertises these five routes. Creator departure closes the lobby for everyone. Feature-wide load acceptance is tracked separately in the feature tasks.
 
 The creation response replaces the prototype's 200/bare-string response. This development change uses a fresh database, without migrations. Stop the backend before removing its old `backend/data.db` and SQLite sidecars (`data.db-wal`, `data.db-shm`), then restart and sign in again. The implementation workflow performs this authorized reset once; do not delete the database on routine restarts. The new schema retains `expires_at`. Existing authentication schemas and browser credential handling are unchanged.
 

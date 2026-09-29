@@ -116,10 +116,11 @@ impl Connection {
                 // Deadline selection can cancel a blocked storage read. It must
                 // never delay token expiry until a pool acquisition finishes.
                 let state = {
-                    let read_state = connection
-                        .app
-                        .database
-                        .stream_membership(connection.user.id, &connection.membership);
+                    let read_state = connection.app.database.bound_stream_state(
+                        connection.user.id,
+                        &connection.membership,
+                        &connection.bound.lobby_id,
+                    );
                     tokio::pin!(read_state);
                     loop {
                         tokio::select! {
@@ -138,16 +139,25 @@ impl Connection {
                     return Some((Ok(event), connection));
                 }
                 let state = match state {
-                    Some(Ok(Some(state)))
-                        if state.lobby_id == connection.bound.lobby_id
-                            && state.closed_at.is_none() =>
-                    {
-                        state
-                    }
-                    // US5 adds departure/closure reasons. For now ended seeded
-                    // generations and storage failures close without inventing one.
+                    Some(Ok(Some(state))) => state,
+                    // A missing lobby before its saved deadline or a storage
+                    // failure is not evidence of a particular terminal reason.
                     _ => return None,
                 };
+                let reason = if state.closed_at.is_some() {
+                    Some("closed")
+                } else if !state.member_exists {
+                    Some("left")
+                } else {
+                    None
+                };
+                if let Some(reason) = reason {
+                    connection.ended = true;
+                    let event = Event::default()
+                        .event("membership_ended")
+                        .data(format!(r#"{{"reason":"{reason}"}}"#));
+                    return Some((Ok(event), connection));
+                }
                 connection.next_read = Instant::now() + Duration::from_secs(1);
                 let initial = connection.last_revision.is_none();
                 if initial

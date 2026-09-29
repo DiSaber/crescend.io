@@ -138,12 +138,12 @@ async fn database_contention_is_temporary_failure() {
 }
 
 #[tokio::test]
-async fn later_story_routes_are_not_available() {
+async fn out_of_scope_admin_routes_are_not_available() {
     let f = Fixture::new().await;
-    for (method, suffix) in [(
-        reqwest::Method::DELETE,
-        "/memberships/11111111111111111111111111111111",
-    )] {
+    for (method, suffix) in [
+        (reqwest::Method::POST, "/close"),
+        (reqwest::Method::POST, "/transfer-owner"),
+    ] {
         let response = f
             .client
             .request(method, format!("{}/api/lobbies{suffix}", f.base))

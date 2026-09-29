@@ -166,7 +166,7 @@ async fn local_connection(f: &Fixture, id: &str) -> crate::lobbies::updates::Con
     )
 }
 
-async fn event_text(event: axum::response::sse::Event) -> String {
+pub(super) async fn event_text(event: axum::response::sse::Event) -> String {
     use axum::response::IntoResponse;
     let body = axum::response::Sse::new(futures_util::stream::iter([Ok::<
         _,
@@ -290,12 +290,16 @@ async fn ended_generation_storage_failure_and_queued_hints_never_emit_protected_
         let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
             .unwrap();
-        if mode == "auth" || mode == "expiry" {
+        if mode != "storage" {
             let terminal = event_text(next.unwrap().unwrap()).await;
             assert!(terminal.contains(if mode == "auth" {
                 "auth_expired"
-            } else {
+            } else if mode == "expiry" {
                 "\"reason\":\"expired\""
+            } else if mode == "closed" {
+                "\"reason\":\"closed\""
+            } else {
+                "\"reason\":\"left\""
             }));
             assert!(stream.next().await.is_none());
         } else {

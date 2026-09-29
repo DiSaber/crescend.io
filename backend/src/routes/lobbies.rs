@@ -5,7 +5,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 
 use crate::{
@@ -19,7 +19,55 @@ pub fn router() -> Router<AppState> {
         .route("/", post(create_lobby))
         .route("/current", get(current_lobby))
         .route("/memberships/{membership_id}/events", get(events))
+        .route("/memberships/{membership_id}", delete(leave_lobby))
         .route("/join", post(join_lobby).layer(DefaultBodyLimit::max(1024)))
+}
+
+#[utoipa::path(
+    delete, path = "/api/lobbies/memberships/{membership_id}", tag = "Lobbies",
+    security(("bearer_auth" = [])),
+    params(("membership_id" = String, Path, description = "Own membership generation: 32 lowercase hex characters")),
+    responses(
+        (status = 204, description = "Membership ended or already absent; owner departure closes the lobby for all. Empty body."),
+        (status = 400, description = "Malformed membership ID or nonempty body", body = ErrorResponse),
+        (status = 401, description = "Authentication required", body = ErrorResponse),
+        (status = 403, description = "Existing membership belongs to another account", body = ErrorResponse),
+        (status = 500, description = "Departure failed without partial state", body = ErrorResponse),
+        (status = 503, description = "Departure temporarily unavailable", body = ErrorResponse)
+    )
+)]
+async fn leave_lobby(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    request: Request,
+) -> Result<StatusCode, LobbyError> {
+    let id = membership_path(path)?;
+    axum::body::to_bytes(request.into_body(), 0)
+        .await
+        .map_err(|_| LobbyError::InvalidRequest)?;
+    if let Some((lobby, revision)) = app
+        .database
+        .leave_lobby(user.id, &id, || (app.auth.clock)())
+        .await?
+    {
+        app.lobby_updates.publish(lobby, revision);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn membership_path(
+    path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+) -> Result<String, LobbyError> {
+    let id = path.map_err(|_| LobbyError::InvalidRequest)?.0;
+    if id.len() != 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(LobbyError::InvalidRequest);
+    }
+    Ok(id)
 }
 
 #[utoipa::path(
@@ -27,7 +75,7 @@ pub fn router() -> Router<AppState> {
     security(("bearer_auth" = [])),
     params(("membership_id" = String, Path, description = "Caller membership generation: 32 lowercase hex characters")),
     responses(
-        (status = 200, description = "SSE sync_required/lobby_changed revision hints; auth_expired or membership_ended expired terminates access. Refetch current state after hints.", content_type = "text/event-stream", body = String),
+        (status = 200, description = "SSE sync_required/lobby_changed revision hints; auth_expired or membership_ended left/closed/expired terminates access. Refetch current state after hints.", content_type = "text/event-stream", body = String),
         (status = 400, description = "Malformed membership ID", body = ErrorResponse),
         (status = 401, description = "Authentication required", body = ErrorResponse),
         (status = 403, description = "Absent, ended or foreign membership", body = ErrorResponse),
@@ -40,14 +88,7 @@ async fn events(
     Extension(user): Extension<AuthenticatedUser>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
 ) -> Result<Response, LobbyError> {
-    let id = path.map_err(|_| LobbyError::InvalidRequest)?.0;
-    if id.len() != 32
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(LobbyError::InvalidRequest);
-    }
+    let id = membership_path(path)?;
     let receiver = app.lobby_updates.subscribe();
     app.database.require_lobby_account(user.id).await?;
     let bound = app
