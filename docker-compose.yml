@@ -1,0 +1,40 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - backend-data:/data
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/scalar"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # Local default keeps the registered http://localhost:3000 Google callback working.
+      # For the hosted demo set SITE_ADDRESS to the public hostname in .env.
+      SITE_ADDRESS: ${SITE_ADDRESS:-:3000}
+    ports:
+      - "${HTTP_PORT:-3000}:3000"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  backend-data:
+  caddy-data:
+  caddy-config:

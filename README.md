@@ -1,5 +1,22 @@
 # CS 4398 Project
 
+## Running with Docker
+
+The whole stack (backend plus a Caddy reverse proxy that serves the frontend and `/api` from one origin) runs with:
+
+```bash
+cp .env.example .env   # fill in the Google OAuth values and a JWT secret
+docker compose up --build
+```
+
+Then open [http://localhost:3000](http://localhost:3000). The API docs are at `/scalar`. After a `git pull`, run `docker compose up --build` again; only changed crates are recompiled.
+
+The SQLite database lives in the `backend-data` volume, so restarts and rebuilds keep accounts and lobbies. To reset it: `docker compose down -v`.
+
+### Hosting
+
+Set `SITE_ADDRESS` in `.env` to the public hostname (for example `crescend.example.com`) and change `GOOGLE_REDIRECT_URI` to `https://<hostname>/api/auth/google/callback`, registering that URI in the Google Cloud Console. Caddy obtains the HTTPS certificate automatically on ports 80/443. The `Caddyfile` already disables buffering for the lobby event stream.
+
 ## Backend
 
 ### Prerequisites:
