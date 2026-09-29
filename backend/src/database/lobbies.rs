@@ -20,12 +20,100 @@ pub enum LobbyError {
 #[derive(sqlx::FromRow)]
 pub(crate) struct StreamMembership {
     pub lobby_id: LobbyId,
-    pub revision: i64,
     pub expires_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(sqlx::FromRow)]
+pub(crate) struct BoundStreamState {
+    pub revision: i64,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub member_exists: bool,
+}
+
 impl Database {
+    pub(crate) async fn leave_lobby(
+        &self,
+        user_id: i64,
+        membership_id: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<Option<(LobbyId, i64)>, LobbyError> {
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = timestamp(clock())?;
+        let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !account {
+            return Err(LobbyError::Unauthorized);
+        }
+        let row = sqlx::query("SELECT m.user_id, l.id, l.owner_user_id, l.expires_at, l.closed_at, l.revision FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id WHERE m.id = ?")
+            .bind(membership_id).fetch_optional(&mut *tx).await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if row.try_get::<i64, _>("user_id")? != user_id {
+            return Err(LobbyError::MembershipForbidden);
+        }
+        let lobby_id: LobbyId = row.try_get("id")?;
+        let expires_at: DateTime<Utc> = row.try_get("expires_at")?;
+        let closed_at: Option<DateTime<Utc>> = row.try_get("closed_at")?;
+        if closed_at.is_some() || expires_at <= now {
+            // Release only this stale slot. Logical expiry/closure already ended
+            // access, so this cleanup must not publish or increment revision.
+            sqlx::query("DELETE FROM lobby_memberships WHERE id = ? AND user_id = ?")
+                .bind(membership_id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let revision = row
+            .try_get::<i64, _>("revision")?
+            .checked_add(1)
+            .ok_or(LobbyError::Unavailable)?;
+        if row.try_get::<i64, _>("owner_user_id")? == user_id {
+            sqlx::query("UPDATE lobbies SET closed_at = ?, revision = ? WHERE id = ?")
+                .bind(now)
+                .bind(revision)
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM lobby_memberships WHERE lobby_id = ?")
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("DELETE FROM lobby_memberships WHERE id = ? AND user_id = ?")
+                .bind(membership_id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+                .bind(revision)
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(Some((lobby_id, revision)))
+    }
+
+    pub(crate) async fn bound_stream_state(
+        &self,
+        user_id: i64,
+        membership_id: &str,
+        lobby_id: &LobbyId,
+    ) -> Result<Option<BoundStreamState>, LobbyError> {
+        // Keep closure and generation existence in one snapshot. Closure removes
+        // memberships, but the retained lobby supplies the terminal reason.
+        Ok(sqlx::query_as("SELECT l.revision, l.closed_at, EXISTS(SELECT 1 FROM lobby_memberships m JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ? AND m.lobby_id = l.id) AS member_exists FROM lobbies l WHERE l.id = ?")
+            .bind(membership_id).bind(user_id).bind(lobby_id.as_str())
+            .fetch_optional(&self.db_pool).await?)
+    }
+
     pub(crate) async fn stream_membership(
         &self,
         user_id: i64,
@@ -33,7 +121,7 @@ impl Database {
     ) -> Result<Option<StreamMembership>, LobbyError> {
         // One statement is one coherent snapshot; no roster or transaction is
         // retained by the transport while it waits for a consumer.
-        Ok(sqlx::query_as("SELECT l.id AS lobby_id, l.revision, l.expires_at, l.closed_at FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ?")
+        Ok(sqlx::query_as("SELECT l.id AS lobby_id, l.expires_at, l.closed_at FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ?")
             .bind(membership_id).bind(user_id).fetch_optional(&self.db_pool).await?)
     }
 

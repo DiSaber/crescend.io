@@ -21,6 +21,8 @@ mod us2_storage;
 mod us3_current;
 mod us4_events;
 mod us4_recovery;
+mod us5_http;
+mod us5_storage;
 
 const NOW: i64 = 1_800_000_000;
 
