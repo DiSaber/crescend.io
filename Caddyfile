@@ -1,0 +1,26 @@
+# Single-origin front door. The backend's browser auth requires the frontend
+# and /api to share one origin, so everything enters through Caddy.
+#
+# SITE_ADDRESS is set by docker-compose:
+#   local dev      -> :3000                (plain HTTP, Origin http://localhost:3000)
+#   hosted demo    -> crescend.example.com (Caddy provisions HTTPS automatically)
+{$SITE_ADDRESS}
+
+encode gzip
+
+# Backend routes. flush_interval -1 disables response buffering so the
+# lobby Server-Sent Events stream is delivered incrementally.
+@backend path /api/* /scalar /scalar/*
+handle @backend {
+	reverse_proxy backend:3000 {
+		flush_interval -1
+	}
+}
+
+# Frontend. Until the real frontend lands this serves web/ (a placeholder).
+# Swap the volume in docker-compose.yml for the frontend build output later.
+handle {
+	root * /srv
+	try_files {path} /index.html
+	file_server
+}
