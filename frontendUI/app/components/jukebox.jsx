@@ -31,7 +31,7 @@ export default function Jukebox({ scale = 1 }) {
 
 
                 {/* Vinyl */}
-                <div className="relative w-60 h-60 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite] z-10">
+                <div className="relative w-65 h-65 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite] z-10">
 
                   {/* Glossy Reflection */}
                   <div className="absolute inset-0 rounded-full pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.25),rgba(255,255,255,0)_40%)]"></div>
@@ -64,7 +64,7 @@ export default function Jukebox({ scale = 1 }) {
                 {/* Inner Grill Content */}
                 <div className="relative bg-zinc-800 rounded-xl p-6">
                   <div className="grid grid-cols-6 gap-2">
-                    {[...Array(18)].map((_, i) => (
+                    {[...Array(24)].map((_, i) => (
                       <div key={i} className="w-30 h-20 bg-zinc-700 rounded-sm"></div>
                     ))}
                   </div>
