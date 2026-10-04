@@ -31,13 +31,13 @@ export default function Home() {
 
         {/* Logo / Title */}
         <h1 className="text-6xl md:text-7xl font-extrabold tracking-wide bg-clip-text text-transparent 
-          bg-gradient-to-b from-white to-[#7D183B] drop-shadow-[0_0_20px_rgba(106,0,255,0.5)]">
+          bg-gradient-to-b from-white to-[#7D183B] ">
           Crescend.io
         </h1>
 
         {/* Tagline */}
         <p className="mt-6 text-xl md:text-2xl text-zinc-300 max-w-2xl leading-relaxed">
-          The group music experience! - create sessions, vote on best music, and enjoy music together in real time.
+          The group music experience! - create sessions, vote on best music, and enjoy music together.
         </p>
 
         {/* Buttons */}
