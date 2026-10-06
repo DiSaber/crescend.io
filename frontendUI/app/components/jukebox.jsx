@@ -1,4 +1,7 @@
-export default function Jukebox({ scale = 1 }) {
+// tiles: up to 24 { title, author_name, thumbnail_url } shown in the grill; the rest stay empty.
+// spinning: the vinyl only spins while something is playing.
+/** @param {{ scale?: number, tiles?: { title: string, author_name: string, thumbnail_url: string }[], spinning?: boolean }} props */
+export default function Jukebox({ scale = 1, tiles = [], spinning = true }) {
   return (
     <div
       style={{
@@ -31,7 +34,7 @@ export default function Jukebox({ scale = 1 }) {
 
 
                 {/* Vinyl */}
-                <div className="relative w-65 h-65 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite] z-10">
+                <div className={`relative w-65 h-65 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] ${spinning ? "animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite]" : ""} z-10`}>
 
                   {/* Glossy Reflection */}
                   <div className="absolute inset-0 rounded-full pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.25),rgba(255,255,255,0)_40%)]"></div>
@@ -64,9 +67,23 @@ export default function Jukebox({ scale = 1 }) {
                 {/* Inner Grill Content */}
                 <div className="relative bg-zinc-800 rounded-xl p-6">
                   <div className="grid grid-cols-6 gap-2">
-                    {[...Array(24)].map((_, i) => (
-                      <div key={i} className="w-30 h-20 bg-zinc-700 rounded-sm"></div>
-                    ))}
+                    {[...Array(24)].map((_, i) => {
+                      const tile = tiles[i];
+                      if (!tile) return <div key={i} className="w-30 h-20 bg-zinc-700 rounded-sm"></div>;
+                      return (
+                        <div
+                          key={i}
+                          title={`${tile.title} - ${tile.author_name}`}
+                          className={`relative w-30 h-20 rounded-sm overflow-hidden bg-cover bg-center ${i === 0 ? "ring-2 ring-[#05EEFF]" : ""}`}
+                          style={{ backgroundImage: `url(${tile.thumbnail_url})` }}
+                        >
+                          <div className="absolute inset-0 bg-black/60 p-1 flex flex-col justify-end text-left">
+                            <span className="text-[10px] leading-tight font-semibold line-clamp-2">{tile.title}</span>
+                            <span className="text-[9px] text-zinc-300 truncate">{tile.author_name}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
