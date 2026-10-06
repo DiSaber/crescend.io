@@ -1,0 +1,9 @@
+# Hosted demo override: publishes 80/443 so Caddy can serve the public hostname
+# and obtain its HTTPS certificate. Requires SITE_ADDRESS in .env.
+#   docker compose -f docker-compose.yml -f docker-compose.hosting.yml up --build
+# or set COMPOSE_FILE in .env (see .env.example) and keep using `docker compose up`.
+services:
+  caddy:
+    ports:
+      - "80:80"
+      - "443:443"

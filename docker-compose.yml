@@ -25,9 +25,9 @@ services:
       # For the hosted demo set SITE_ADDRESS to the public hostname in .env.
       SITE_ADDRESS: ${SITE_ADDRESS:-:3000}
     ports:
-      - "${HTTP_PORT:-3000}:3000"
-      - "80:80"
-      - "443:443"
+      # Loopback only, so the plain-HTTP local stack is not reachable from the network.
+      # Hosted mode adds 80/443 via docker-compose.hosting.yml.
+      - "127.0.0.1:${HTTP_PORT:-3000}:3000"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./web:/srv:ro
