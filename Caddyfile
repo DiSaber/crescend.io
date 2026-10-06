@@ -17,10 +17,10 @@ handle @backend {
 	}
 }
 
-# Frontend. Until the real frontend lands this serves web/ (a placeholder).
-# Swap the volume in docker-compose.yml for the frontend build output later.
+# Frontend: the Next.js static export (trailingSlash, so pages are dir/index.html),
+# built into the Caddy image from frontendUI/.
 handle {
 	root * /srv
-	try_files {path} /index.html
+	try_files {path} {path}/index.html /index.html
 	file_server
 }
