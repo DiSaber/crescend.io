@@ -192,7 +192,7 @@ function Lobby() {
         </div>
       )}
 
-      <Jukebox scale={0.9} tiles={queue} spinning={!!nowPlaying} />
+      <Jukebox className="max-w-4xl" tiles={queue} spinning={!!nowPlaying} />
     </div>
   );
 }

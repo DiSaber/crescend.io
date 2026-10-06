@@ -1,31 +1,27 @@
 // tiles: up to 24 { title, author_name, thumbnail_url } shown in the grill; the rest stay empty.
 // spinning: the vinyl only spins while something is playing.
-/** @param {{ scale?: number, tiles?: { title: string, author_name: string, thumbnail_url: string }[], spinning?: boolean }} props */
-export default function Jukebox({ scale = 1, tiles = [], spinning = true }) {
+/** @param {{ className?: string, tiles?: { title: string, author_name: string, thumbnail_url: string }[], spinning?: boolean }} props */
+export default function Jukebox({ className = "", tiles = [], spinning = true }) {
   return (
-    <div
-      style={{
-        transform: `scale(${scale})`,
-        transformOrigin: "top center",
-      }}
-    >
-      <div className="w-225 flex items-center justify-center bg-gradient-to-b from-black to-red-800 rounded-b-[80px]">
+    // Fluid width: the parent caps it (className), so it never overflows the page.
+    <div className={`w-full ${className}`}>
+      <div className="w-full flex items-center justify-center bg-gradient-to-b from-black to-red-800 rounded-b-[80px]">
 
 <div className="absolute bottom-0 left-0 w-full h-[40px] rounded-b-[80px] overflow-hidden pointer-events-none"></div>
         {/* OUTER BORDER WRAPPER */}
-        <div className="relative w-[85vw] max-w-4xl">
+        <div className="relative w-full">
 
           {/* Pulsing Outer Border */}
-          <div className="absolute -inset-2 rounded-[90px] border-[8px] border-transparent animate-[multiPulse_3s_linear_infinite] pointer-events-none"></div>
+          <div className="absolute -inset-2 rounded-[60px] sm:rounded-[90px] border-[8px] border-transparent animate-[multiPulse_3s_linear_infinite] pointer-events-none"></div>
 
           {/* JUKEBOX CONTAINER */}
-          <div className="relative p-10 rounded-[80px] bg-gradient-to-b from-black to-red-800 shadow-[inset_0_0_20px_rgba(255,255,255,0.3),0_0_50px_rgba(255,200,0,0.5)] flex flex-col items-center">
+          <div className="relative p-4 sm:p-10 rounded-[50px] sm:rounded-[80px] bg-gradient-to-b from-black to-red-800 shadow-[inset_0_0_20px_rgba(255,255,255,0.3),0_0_50px_rgba(255,200,0,0.5)] flex flex-col items-center">
 
             {/* JUKEBOX CONTENT */}
             <div className="relative z-10 w-full flex flex-col items-center">
 
               {/* ARCHED TOP */}
-              <div className="relative w-full h-[40vh] rounded-t-[80px] bg-gradient-to-b from-black to-red-700 flex flex-col items-center justify-center shadow-inner animate-[flicker_2s_ease-in-out_infinite]">
+              <div className="relative w-full h-[30vh] sm:h-[40vh] rounded-t-[50px] sm:rounded-t-[80px] bg-gradient-to-b from-black to-red-700 flex flex-col items-center justify-center shadow-inner animate-[flicker_2s_ease-in-out_infinite]">
 
                 <div className="absolute inset-3 rounded-t-[80px] bg-[linear-gradient(180deg,#FF7A00,#FF3300,#FF0055)] opacity-60 blur-xl pointer-events-none"></div>
 
@@ -34,7 +30,7 @@ export default function Jukebox({ scale = 1, tiles = [], spinning = true }) {
 
 
                 {/* Vinyl */}
-                <div className={`relative w-65 h-65 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] ${spinning ? "animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite]" : ""} z-10`}>
+                <div className={`relative w-40 h-40 sm:w-65 sm:h-65 rounded-full mt-6 flex items-center justify-center border-4 border-zinc-700 bg-[radial-gradient(circle,_#000_0%,_#111_10%,_#000_20%,_#111_30%,_#000_40%,_#111_50%,_#000_60%,_#111_70%,_#000_80%,_#111_90%,_#000_100%)] ${spinning ? "animate-[spin_4s_linear_infinite,wobble_2s_ease-in-out_infinite]" : ""} z-10`}>
 
                   {/* Glossy Reflection */}
                   <div className="absolute inset-0 rounded-full pointer-events-none bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.25),rgba(255,255,255,0)_40%)]"></div>
@@ -43,19 +39,19 @@ export default function Jukebox({ scale = 1, tiles = [], spinning = true }) {
                   <div className="absolute inset-0 rounded-full pointer-events-none bg-[linear-gradient(120deg,transparent_40%,rgba(255,255,255,0.4)_50%,transparent_60%)] bg-[length:200%_200%] animate-[shine_3s_linear_infinite]"></div>
 
                   {/* Inner Vinyl Label */}
-                  <div className="relative w-24 h-24 bg-red-600 rounded-full border-4 border-black flex items-center justify-center">
+                  <div className="relative w-16 h-16 sm:w-24 sm:h-24 bg-red-600 rounded-full border-4 border-black flex items-center justify-center">
                     <div className="absolute w-4 h-4 bg-black rounded-full"></div>
                   </div>
                 </div>
               </div>
 
               {/* Neon Tubes */}
-              <div className="flex justify-center gap-6 my-10">
-                <div className="w-6 h-28 bg-red-600 rounded-full shadow-[0_0_25px_#FF0055] animate-pulse [animation-delay:0s]"></div>
-                <div className="w-6 h-28 bg-blue-600 rounded-full shadow-[0_0_25px_#00A8FF] animate-pulse [animation-delay:0.3s]"></div>
-                <div className="w-6 h-28 bg-[#00FFFF] rounded-full shadow-[0_0_25px_#00FFFF] animate-pulse [animation-delay:0.6s]"></div>
-                <div className="w-6 h-28 bg-purple-500 rounded-full shadow-[0_0_25px_#B200FF] animate-pulse [animation-delay:0.9s]"></div>
-                <div className="w-6 h-28 bg-[#F52791] rounded-full shadow-[0_0_25px_#F52791] animate-pulse [animation-delay:1.2s]"></div>
+              <div className="flex justify-center gap-3 sm:gap-6 my-6 sm:my-10">
+                <div className="w-4 h-20 sm:w-6 sm:h-28 bg-red-600 rounded-full shadow-[0_0_25px_#FF0055] animate-pulse [animation-delay:0s]"></div>
+                <div className="w-4 h-20 sm:w-6 sm:h-28 bg-blue-600 rounded-full shadow-[0_0_25px_#00A8FF] animate-pulse [animation-delay:0.3s]"></div>
+                <div className="w-4 h-20 sm:w-6 sm:h-28 bg-[#00FFFF] rounded-full shadow-[0_0_25px_#00FFFF] animate-pulse [animation-delay:0.6s]"></div>
+                <div className="w-4 h-20 sm:w-6 sm:h-28 bg-purple-500 rounded-full shadow-[0_0_25px_#B200FF] animate-pulse [animation-delay:0.9s]"></div>
+                <div className="w-4 h-20 sm:w-6 sm:h-28 bg-[#F52791] rounded-full shadow-[0_0_25px_#F52791] animate-pulse [animation-delay:1.2s]"></div>
               </div>
 
               {/* Grill */}
@@ -65,16 +61,16 @@ export default function Jukebox({ scale = 1, tiles = [], spinning = true }) {
                 <div className="absolute -inset-1 rounded-xl border-[10px] border-transparent animate-[multiPulse_3s_linear_infinite] pointer-events-none"></div>
 
                 {/* Inner Grill Content */}
-                <div className="relative bg-zinc-800 rounded-xl p-6">
-                  <div className="grid grid-cols-6 gap-2">
+                <div className="relative bg-zinc-800 rounded-xl p-3 sm:p-6">
+                  <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
                     {[...Array(24)].map((_, i) => {
                       const tile = tiles[i];
-                      if (!tile) return <div key={i} className="w-30 h-20 bg-zinc-700 rounded-sm"></div>;
+                      if (!tile) return <div key={i} className="w-full aspect-[3/2] bg-zinc-700 rounded-sm"></div>;
                       return (
                         <div
                           key={i}
                           title={`${tile.title} - ${tile.author_name}`}
-                          className={`relative w-30 h-20 rounded-sm overflow-hidden bg-cover bg-center ${i === 0 ? "ring-2 ring-[#05EEFF]" : ""}`}
+                          className={`relative w-full aspect-[3/2] rounded-sm overflow-hidden bg-cover bg-center ${i === 0 ? "ring-2 ring-[#05EEFF]" : ""}`}
                           style={{ backgroundImage: `url(${tile.thumbnail_url})` }}
                         >
                           <div className="absolute inset-0 bg-black/60 p-1 flex flex-col justify-end text-left">

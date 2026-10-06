@@ -3,9 +3,9 @@ import Jukebox from "./components/jukebox.jsx";
 
 export default function Home() {
   return (
-    <div className="relative w-full min-h-screen flex items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white overflow-hidden">
+    <div className="relative w-full min-h-screen flex flex-col-reverse xl:flex-row items-center justify-center gap-12 py-12 px-4 bg-gradient-to-b from-black to-[#1a0b29] text-white overflow-hidden">
 
-    <Jukebox scale={0.9} />
+    <Jukebox className="max-w-2xl" />
 
 
       {/* BACKGROUND GLOW */}
@@ -30,7 +30,7 @@ export default function Home() {
       <div className="relative z-10 flex flex-col items-center text-center px-6">
 
         {/* Logo / Title */}
-        <h1 className="text-6xl md:text-7xl font-extrabold tracking-wide bg-clip-text text-transparent 
+        <h1 className="text-5xl sm:text-6xl md:text-7xl font-extrabold tracking-wide bg-clip-text text-transparent 
           bg-gradient-to-b from-white to-[#7D183B] ">
           Crescend.io
         </h1>
