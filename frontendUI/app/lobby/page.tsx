@@ -13,6 +13,129 @@ import {
   type VideoMetadata,
 } from "../lib/lobby";
 
+type YouTubePlayer = {
+  destroy: () => void;
+};
+
+type YouTubePlayerEvent = {
+  data: number;
+};
+
+type YouTubeApi = {
+  Player: new (
+    element: HTMLDivElement,
+    options: {
+      videoId: string;
+      playerVars?: Record<string, number | string>;
+      events?: {
+        onStateChange?: (event: YouTubePlayerEvent) => void;
+      };
+    },
+  ) => YouTubePlayer;
+  PlayerState: { ENDED: number };
+};
+
+declare global {
+  interface Window {
+    YT?: YouTubeApi;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+let youtubeApiPromise: Promise<YouTubeApi> | undefined;
+
+function loadYouTubeApi(): Promise<YouTubeApi> {
+  if (youtubeApiPromise) return youtubeApiPromise;
+
+  youtubeApiPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector(
+      'script[src="https://www.youtube.com/iframe_api"]',
+    );
+    const previousReady = window.onYouTubeIframeAPIReady;
+
+    window.onYouTubeIframeAPIReady = () => {
+      previousReady?.();
+      if (window.YT) resolve(window.YT);
+      else reject(new Error("YouTube player API did not initialize."));
+    };
+
+    if (window.YT?.Player) {
+      resolve(window.YT);
+      return;
+    }
+
+    if (existing) return;
+
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    script.async = true;
+    script.onerror = () => reject(new Error("Could not load the YouTube player."));
+    document.head.appendChild(script);
+  });
+
+  return youtubeApiPromise;
+}
+
+function YouTubePlayer({
+  video,
+  onEnded,
+  onError,
+}: {
+  video: VideoMetadata;
+  onEnded: () => void;
+  onError: (error: Error) => void;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  const ended = useRef(false);
+
+  useEffect(() => {
+    let player: YouTubePlayer | undefined;
+    let cancelled = false;
+    ended.current = false;
+
+    loadYouTubeApi()
+      .then((youtube) => {
+        if (cancelled || !container.current) return;
+        const endedState = youtube.PlayerState?.ENDED ?? 0;
+        player = new youtube.Player(container.current, {
+          videoId: video.video_id,
+          playerVars: {
+            autoplay: 1,
+            enablejsapi: 1,
+            origin: window.location.origin,
+          },
+          events: {
+            onStateChange: (event) => {
+              if (event.data === endedState && !ended.current) {
+                ended.current = true;
+                onEnded();
+              }
+            },
+          },
+        });
+      })
+      .catch((error: unknown) => {
+        onError(
+          error instanceof Error
+            ? error
+            : new Error("Could not load the YouTube player."),
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      player?.destroy();
+    };
+  }, [video.video_id, onEnded, onError]);
+
+  return (
+    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black">
+      <div ref={container} className="absolute inset-0" />
+      <noscript>JavaScript is required to play YouTube videos.</noscript>
+    </div>
+  );
+}
+
 const ENDED_MESSAGES = {
   left: "You left the session.",
   closed: "The host closed the session.",
@@ -117,6 +240,14 @@ function Lobby() {
     }
   }
 
+  const advancePlayback = useCallback(() => {
+    setQueue((q) => q.slice(1));
+  }, []);
+
+  const reportPlayerError = useCallback((playerError: Error) => {
+    setError(playerError.message);
+  }, []);
+
   if (membershipId === undefined) return <p className="text-zinc-400">Loading session…</p>;
 
   if (!lobby) {
@@ -182,13 +313,16 @@ function Lobby() {
               Skip
             </button>
           </div>
-          <iframe
+          <YouTubePlayer
             key={nowPlaying.video_id}
-            src={nowPlaying.embed_url}
-            allow="autoplay; encrypted-media"
-            className="w-full aspect-video rounded-lg"
+            video={nowPlaying}
+            onEnded={advancePlayback}
+            onError={reportPlayerError}
           />
-          <p className="mt-2 text-xs text-zinc-500">The queue is only on this device for now; a shared queue needs backend support.</p>
+          <p className="mt-2 text-xs text-zinc-500">
+            Playback and the queue are only on this device for now; shared
+            playback needs backend support.
+          </p>
         </div>
       )}
 
