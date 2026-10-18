@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
@@ -13,12 +13,8 @@ import {
   type VideoMetadata,
 } from "../lib/lobby";
 
-type YouTubePlayer = {
+type YouTubePlayerInstance = {
   destroy: () => void;
-};
-
-type YouTubePlayerEvent = {
-  data: number;
 };
 
 type YouTubeApi = {
@@ -28,10 +24,11 @@ type YouTubeApi = {
       videoId: string;
       playerVars?: Record<string, number | string>;
       events?: {
-        onStateChange?: (event: YouTubePlayerEvent) => void;
+        onStateChange?: (event: { data: number }) => void;
+        onError?: (event: { data: number }) => void;
       };
     },
-  ) => YouTubePlayer;
+  ) => YouTubePlayerInstance;
   PlayerState: { ENDED: number };
 };
 
@@ -83,20 +80,19 @@ function YouTubePlayer({
 }: {
   video: VideoMetadata;
   onEnded: () => void;
-  onError: (error: Error) => void;
+  onError: (message: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const ended = useRef(false);
 
   useEffect(() => {
-    let player: YouTubePlayer | undefined;
+    let player: YouTubePlayerInstance | undefined;
     let cancelled = false;
     ended.current = false;
 
     loadYouTubeApi()
       .then((youtube) => {
         if (cancelled || !container.current) return;
-        const endedState = youtube.PlayerState?.ENDED ?? 0;
         player = new youtube.Player(container.current, {
           videoId: video.video_id,
           playerVars: {
@@ -106,20 +102,17 @@ function YouTubePlayer({
           },
           events: {
             onStateChange: (event) => {
-              if (event.data === endedState && !ended.current) {
+              if (event.data === youtube.PlayerState.ENDED && !ended.current) {
                 ended.current = true;
                 onEnded();
               }
             },
+            onError: () => onError("YouTube could not play this video."),
           },
         });
       })
-      .catch((error: unknown) => {
-        onError(
-          error instanceof Error
-            ? error
-            : new Error("Could not load the YouTube player."),
-        );
+      .catch(() => {
+        if (!cancelled) onError("Could not load the YouTube player.");
       });
 
     return () => {
@@ -241,11 +234,28 @@ function Lobby() {
   }
 
   const advancePlayback = useCallback(() => {
-    setQueue((q) => q.slice(1));
+    setQueue((current) => current.slice(1));
   }, []);
 
-  const reportPlayerError = useCallback((playerError: Error) => {
-    setError(playerError.message);
+  const removeFromQueue = useCallback((index: number) => {
+    setQueue((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }, []);
+
+  const moveInQueue = useCallback((index: number, direction: -1 | 1) => {
+    setQueue((current) => {
+      const targetIndex = index + direction;
+      if (index < 1 || targetIndex < 1 || targetIndex >= current.length) {
+        return current;
+      }
+
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+  }, []);
+
+  const reportPlayerError = useCallback((message: string) => {
+    setError(message);
   }, []);
 
   if (membershipId === undefined) return <p className="text-zinc-400">Loading session…</p>;
@@ -305,11 +315,11 @@ function Lobby() {
       </form>
       {error && <p className="text-red-400">{error}</p>}
 
-      {nowPlaying && (
+      {nowPlaying ? (
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <div className="flex justify-between items-center mb-3">
             <p className="font-semibold truncate">Now playing: {nowPlaying.title}</p>
-            <button onClick={() => setQueue((q) => q.slice(1))} className="text-sm underline text-zinc-400 hover:text-white shrink-0 ml-4">
+            <button onClick={advancePlayback} className="text-sm underline text-zinc-400 hover:text-white shrink-0 ml-4">
               Skip
             </button>
           </div>
@@ -324,6 +334,73 @@ function Lobby() {
             playback needs backend support.
           </p>
         </div>
+      ) : (
+        <div className="w-full max-w-4xl rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 p-8 text-center">
+          <p className="font-semibold text-zinc-200">Queue is empty</p>
+          <p className="mt-2 text-sm text-zinc-500">
+            Add a YouTube link above to start playback.
+          </p>
+        </div>
+      )}
+
+      {queue.length > 1 && (
+        <section className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
+          <h2 className="font-semibold mb-3">Up next</h2>
+          <ol className="space-y-2">
+            {queue.slice(1).map((song, index) => {
+              const queueIndex = index + 1;
+              return (
+                <li
+                  key={`${song.video_id}-${queueIndex}`}
+                  className="flex items-center gap-3 rounded-lg bg-zinc-800 p-2"
+                >
+                  <span className="w-6 text-center text-sm text-zinc-500">
+                    {queueIndex}
+                  </span>
+                  <img
+                    src={song.thumbnail_url}
+                    alt=""
+                    className="h-12 w-20 rounded object-cover"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{song.title}</p>
+                    <p className="truncate text-xs text-zinc-400">
+                      {song.author_name}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => moveInQueue(queueIndex, -1)}
+                      disabled={queueIndex === 1}
+                      aria-label={`Move ${song.title} up`}
+                      className="rounded px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => moveInQueue(queueIndex, 1)}
+                      disabled={queueIndex === queue.length - 1}
+                      aria-label={`Move ${song.title} down`}
+                      className="rounded px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeFromQueue(queueIndex)}
+                      aria-label={`Remove ${song.title}`}
+                      className="rounded px-2 py-1 text-sm text-red-300 hover:bg-red-950"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
       )}
 
       <Jukebox className="max-w-4xl" tiles={queue} spinning={!!nowPlaying} />
