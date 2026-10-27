@@ -1,5 +1,6 @@
 mod auth;
 mod lobbies;
+mod queue;
 mod youtube;
 
 use crate::auth::JwtAuth;
@@ -13,11 +14,12 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
         (name = "Lobbies", description = "Lobby endpoints"),
+        (name = "Queue", description = "Persistent membership-bound song queue"),
         (name = "YouTube", description = "YouTube endpoints")
     )
 )]
@@ -95,7 +97,14 @@ mod lobby_documentation_tests {
                 "/api/lobbies/current",
                 "/api/lobbies/join",
                 "/api/lobbies/memberships/{membership_id}",
-                "/api/lobbies/memberships/{membership_id}/events"
+                "/api/lobbies/memberships/{membership_id}/events",
+                "/api/lobbies/memberships/{membership_id}/queue",
+                "/api/lobbies/memberships/{membership_id}/queue/advance",
+                "/api/lobbies/memberships/{membership_id}/queue/entries",
+                "/api/lobbies/memberships/{membership_id}/queue/entries/{entry_id}",
+                "/api/lobbies/memberships/{membership_id}/queue/entries/{entry_id}/move",
+                "/api/lobbies/memberships/{membership_id}/queue/entries/{entry_id}/votes",
+                "/api/lobbies/memberships/{membership_id}/queue/voting-policy"
             ]
         );
         let leave = &paths["/api/lobbies/memberships/{membership_id}"]["delete"];
@@ -148,6 +157,28 @@ mod lobby_documentation_tests {
             "#/components/schemas/CurrentLobby"
         );
         let schemas = document["components"]["schemas"].as_object().unwrap();
+        for (suffix, method) in [
+            ("", "get"),
+            ("/entries", "post"),
+            ("/entries/{entry_id}", "delete"),
+            ("/advance", "post"),
+            ("/entries/{entry_id}/votes", "post"),
+            ("/voting-policy", "put"),
+            ("/entries/{entry_id}/move", "post"),
+        ] {
+            let operation = &paths
+                [&format!("/api/lobbies/memberships/{{membership_id}}/queue{suffix}")][method];
+            assert_eq!(
+                operation["security"][0]["bearer_auth"],
+                serde_json::json!([])
+            );
+            for status in ["200", "400", "401", "403", "500", "503"] {
+                assert!(
+                    operation["responses"][status].is_object(),
+                    "{suffix} {status}"
+                );
+            }
+        }
         for name in [
             "CurrentLobby",
             "LobbyView",
@@ -156,6 +187,16 @@ mod lobby_documentation_tests {
             "LobbyId",
             "MembershipId",
             "JoinLobbyRequest",
+            "QueueView",
+            "QueueEntry",
+            "VotingView",
+            "SubmitRequest",
+            "SubmissionResponse",
+            "MutationResponse",
+            "AdvanceRequest",
+            "AdvanceReason",
+            "PolicyRequest",
+            "MoveRequest",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }

@@ -8,18 +8,33 @@ use std::{convert::Infallible, time::Duration};
 use tokio::{sync::broadcast, time::Instant};
 
 #[derive(Clone)]
-pub struct LobbyUpdates(broadcast::Sender<(LobbyId, i64)>);
+pub struct LobbyUpdates(
+    broadcast::Sender<(LobbyId, i64)>,
+    #[cfg(test)] std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
 
 impl Default for LobbyUpdates {
     fn default() -> Self {
-        Self(broadcast::channel(256).0)
+        Self(
+            broadcast::channel(256).0,
+            #[cfg(test)]
+            Default::default(),
+        )
     }
 }
 
 impl LobbyUpdates {
     pub fn publish(&self, lobby: LobbyId, revision: i64) {
+        #[cfg(test)]
+        if self.1.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         // A missed notification never changes the committed database result.
         let _ = self.0.send((lobby, revision));
+    }
+    #[cfg(test)]
+    pub(crate) fn suppress_next(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<(LobbyId, i64)> {
         self.0.subscribe()

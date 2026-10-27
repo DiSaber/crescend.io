@@ -85,6 +85,7 @@ impl Fixture {
         );
         let updates = crate::lobbies::updates::LobbyUpdates::default();
         let app = crate::routes::router(auth.jwt.clone()).with_state(AppState {
+            metadata: crate::youtube::MetadataClient::new().unwrap(),
             database: database.clone(),
             lobby_updates: updates.clone(),
             auth: auth.clone(),

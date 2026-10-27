@@ -4,3 +4,8 @@ target/
 *.db
 *.db-shm
 *.db-wal
+.git/
+Dockerfile*
+.dockerignore
+*.log*
+coverage/
