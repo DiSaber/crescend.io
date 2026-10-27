@@ -4,7 +4,9 @@ mod auth;
 mod database;
 mod lobbies;
 mod models;
+mod queue;
 mod routes;
+mod youtube;
 
 use crate::{app_state::AppState, database::Database};
 
@@ -28,6 +30,7 @@ async fn main() {
     database.start_cleanup();
 
     let app = routes::router(auth.jwt.clone()).with_state(AppState {
+        metadata: youtube::MetadataClient::new().expect("Metadata client initialization failed"),
         database,
         auth,
         lobby_updates: Default::default(),

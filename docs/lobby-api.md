@@ -205,3 +205,16 @@ cargo run --locked
 ```
 
 Open `/scalar` on the backend origin to inspect the implemented contract. Automated creation tests use temporary file-backed databases and local test-only accounts/tokens; they do not require a real Google sign-in.
+
+## Queue invalidations
+
+Guest joins and departures atomically reevaluate queue moderation using the new
+guest population and retained account votes. Membership plus resulting removals
+commits one revision. Rejoining restores existing account votes. Owner departure
+closes the lobby and clears policy, entries, votes and receipt/order data together.
+All backend membership writers must be upgraded together for these guarantees.
+
+Membership SSE revision hints also invalidate the generation-bound shared queue.
+Queue-capable consumers should follow [queue ordering and recovery](queue-api.md).
+Membership and queue snapshots are individually coherent and can have different
+revisions. Refetch the older snapshot when matching versions are required.

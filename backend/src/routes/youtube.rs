@@ -1,27 +1,20 @@
 use crate::api_error::{ApiError, ErrorResponse};
+use crate::{
+    app_state::AppState,
+    youtube::{MetadataError, YouTubeVideo},
+};
+use axum::extract::State;
 use axum::{
     Json, Router,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
 };
-use serde::Deserialize;
-use url::Url;
 
 use crate::models::youtube::{MetadataRequest, VideoMetadata};
 
-const OEMBED_ENDPOINT: &str = "https://www.youtube.com/oembed";
-
 pub fn router() -> Router<crate::app_state::AppState> {
     Router::new().route("/metadata", post(metadata))
-}
-
-#[derive(Debug, Deserialize)]
-struct OEmbedResponse {
-    title: String,
-    author_name: String,
-    author_url: String,
-    thumbnail_url: String,
 }
 
 /// Fetch metadata for a YouTube video.
@@ -43,93 +36,20 @@ struct OEmbedResponse {
     )
 )]
 async fn metadata(
+    State(app): State<AppState>,
     request: Result<Json<MetadataRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<VideoMetadata>, YoutubeError> {
     let Json(request) = request.map_err(YoutubeError::Json)?;
-    let video = YouTubeVideo::parse(&request.url).ok_or(YoutubeError::InvalidUrl)?;
-    let endpoint = Url::parse_with_params(
-        OEMBED_ENDPOINT,
-        &[("url", video.watch_url.as_str()), ("format", "json")],
-    )
-    .map_err(|_| YoutubeError::Service)?;
-
-    let response = reqwest::get(endpoint)
+    let video = YouTubeVideo::parse(&request.url).map_err(|_| YoutubeError::InvalidUrl)?;
+    app.metadata
+        .lookup(&video)
         .await
-        .map_err(|error| {
-            eprintln!("YouTube metadata request failed: {error}");
-            YoutubeError::Service
-        })?
-        .error_for_status()
-        .map_err(|error| {
-            eprintln!("YouTube metadata response failed: {error}");
-            YoutubeError::Unavailable
-        })?
-        .json::<OEmbedResponse>()
-        .await
-        .map_err(|error| {
-            eprintln!("YouTube metadata response could not be decoded: {error}");
-            YoutubeError::Unavailable
-        })?;
-
-    Ok(Json(VideoMetadata {
-        video_id: video.id,
-        title: response.title,
-        author_name: response.author_name,
-        author_url: response.author_url,
-        thumbnail_url: response.thumbnail_url,
-        embed_url: video.embed_url,
-    }))
-}
-
-#[derive(Debug)]
-struct YouTubeVideo {
-    id: String,
-    watch_url: Url,
-    embed_url: String,
-}
-
-impl YouTubeVideo {
-    fn parse(input: &str) -> Option<Self> {
-        let url = Url::parse(input.trim()).ok()?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return None;
-        }
-
-        let host = url.host_str()?.to_ascii_lowercase();
-        let id = match host.as_str() {
-            "youtu.be" => url.path_segments()?.next()?.to_owned(),
-            "youtube.com" | "www.youtube.com" | "m.youtube.com" => {
-                let path = url.path().trim_matches('/');
-                if path == "watch" {
-                    url.query_pairs()
-                        .find(|(key, _)| key == "v")
-                        .map(|(_, value)| value.into_owned())?
-                } else if let Some(id) = path.strip_prefix("shorts/") {
-                    id.to_owned()
-                } else if let Some(id) = path.strip_prefix("embed/") {
-                    id.to_owned()
-                } else {
-                    return None;
-                }
-            }
-            _ => return None,
-        };
-
-        if !(6..=24).contains(&id.len())
-            || !id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return None;
-        }
-
-        let watch_url = Url::parse(&format!("https://www.youtube.com/watch?v={id}")).ok()?;
-        Some(Self {
-            embed_url: format!("https://www.youtube.com/embed/{id}?autoplay=1&enablejsapi=1"),
-            id,
-            watch_url,
+        .map(Json)
+        .map_err(|error| match error {
+            MetadataError::InvalidUrl => YoutubeError::InvalidUrl,
+            MetadataError::Service => YoutubeError::Service,
+            MetadataError::Unavailable => YoutubeError::Unavailable,
         })
-    }
 }
 
 #[derive(Debug)]
@@ -189,6 +109,32 @@ impl IntoResponse for YoutubeError {
 mod tests {
     use super::YouTubeVideo;
 
+    fn test_state() -> crate::app_state::AppState {
+        let config = crate::auth::AuthConfig::load(|key| {
+            Some(
+                match key {
+                    "GOOGLE_CLIENT_ID" => "test-client",
+                    "GOOGLE_CLIENT_SECRET" => "test-secret",
+                    "GOOGLE_REDIRECT_URI" => "http://localhost:3000/api/auth/google/callback",
+                    "JWT_SIGNING_SECRET" => "test-only-signing-secret-at-least-32-bytes",
+                    _ => return None,
+                }
+                .into(),
+            )
+        })
+        .unwrap();
+        crate::app_state::AppState {
+            database: crate::database::Database {
+                db_pool: sqlx::sqlite::SqlitePoolOptions::new()
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap(),
+            },
+            auth: std::sync::Arc::new(crate::auth::Auth::new(config).unwrap()),
+            lobby_updates: Default::default(),
+            metadata: crate::youtube::MetadataClient::new().unwrap(),
+        }
+    }
+
     #[tokio::test]
     async fn request_rejections_use_shared_json_errors() {
         use axum::{extract::FromRequest, response::IntoResponse};
@@ -211,7 +157,9 @@ mod tests {
             let extracted =
                 axum::Json::<crate::models::youtube::MetadataRequest>::from_request(request, &())
                     .await;
-            let response = super::metadata(extracted).await.into_response();
+            let response = super::metadata(axum::extract::State(test_state()), extracted)
+                .await
+                .into_response();
             assert_eq!(response.status().as_u16(), status);
             assert_eq!(response.headers()["content-type"], "application/json");
             let bytes = axum::body::to_bytes(response.into_body(), 4096)
@@ -236,9 +184,9 @@ mod tests {
 
     #[test]
     fn rejects_non_video_links_and_malformed_ids() {
-        assert!(YouTubeVideo::parse("https://www.youtube.com/playlist?list=abc").is_none());
-        assert!(YouTubeVideo::parse("https://example.com/watch?v=dQw4w9WgXcQ").is_none());
-        assert!(YouTubeVideo::parse("https://youtu.be/short").is_none());
-        assert!(YouTubeVideo::parse("javascript:alert(1)").is_none());
+        assert!(YouTubeVideo::parse("https://www.youtube.com/playlist?list=abc").is_err());
+        assert!(YouTubeVideo::parse("https://example.com/watch?v=dQw4w9WgXcQ").is_err());
+        assert!(YouTubeVideo::parse("https://youtu.be/short").is_err());
+        assert!(YouTubeVideo::parse("javascript:alert(1)").is_err());
     }
 }

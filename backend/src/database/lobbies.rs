@@ -85,12 +85,21 @@ impl Database {
                 .bind(lobby_id.as_str())
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("DELETE FROM queue_entries WHERE lobby_id = ?")
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM lobby_queue_policies WHERE lobby_id = ?")
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
         } else {
             sqlx::query("DELETE FROM lobby_memberships WHERE id = ? AND user_id = ?")
                 .bind(membership_id)
                 .bind(user_id)
                 .execute(&mut *tx)
                 .await?;
+            super::queue::reevaluate(&mut tx, lobby_id.as_str()).await?;
             sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
                 .bind(revision)
                 .bind(lobby_id.as_str())
@@ -98,6 +107,8 @@ impl Database {
                 .await?;
         }
         tx.commit().await?;
+        #[cfg(test)]
+        super::queue::record_commit(lobby_id.as_str(), revision);
         Ok(Some((lobby_id, revision)))
     }
 
@@ -272,6 +283,7 @@ impl Database {
                 }
             }
             let id = allocated.ok_or(LobbyError::Unavailable)?;
+            super::queue::reevaluate(&mut tx, lobby_id.as_str()).await?;
             revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
             sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
                 .bind(revision)
@@ -302,6 +314,10 @@ impl Database {
             }),
         };
         tx.commit().await?;
+        #[cfg(test)]
+        if changed {
+            super::queue::record_commit(view.lobby.as_ref().unwrap().id.as_str(), revision);
+        }
         Ok((view, changed))
     }
 
@@ -413,6 +429,10 @@ impl Database {
                 attempt.rollback().await?;
                 continue;
             }
+            sqlx::query("INSERT INTO lobby_queue_policies(lobby_id) VALUES (?)")
+                .bind(candidate.lobby_id.as_str())
+                .execute(&mut *attempt)
+                .await?;
             attempt.commit().await?;
             let view = CurrentLobby {
                 membership_id: Some(candidate.membership_id),

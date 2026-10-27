@@ -271,6 +271,7 @@ async fn queued_old_stream_never_follows_rejoin_and_saved_expiry_survives_cleanu
         let lobby = bound.lobby_id.clone();
         let connection = crate::lobbies::updates::Connection::new(
             AppState {
+                metadata: crate::youtube::MetadataClient::new().unwrap(),
                 database: f.database.clone(),
                 auth: f.auth.clone(),
                 lobby_updates: f.updates.clone(),

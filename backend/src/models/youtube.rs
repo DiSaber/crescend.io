@@ -10,7 +10,7 @@ pub struct MetadataRequest {
 /// Normalized YouTube video details with metadata retrieved from YouTube oEmbed.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct VideoMetadata {
-    /// Normalized video identifier, suitable for identifying queue entries.
+    /// Normalized video identifier. Repeated queue occurrences have separate entry IDs.
     #[schema(example = "dQw4w9WgXcQ")]
     pub video_id: String,
     /// Video title returned by YouTube.
