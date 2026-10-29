@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useRouter } from "next/navigation";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
-import YouTubeSearchFallback from "../components/YouTubeSearchFallback";
+import SongSearch from "../components/SongSearch";
 import { currentUserId } from "../lib/auth";
 import {
   getCurrent,
@@ -186,7 +186,8 @@ function Lobby() {
   const [busy, setBusy] = useState<string>();
 
   const [link, setLink] = useState("");
-  const [adding, setAdding] = useState(false);
+  // The URL being submitted, if any.
+  const [adding, setAdding] = useState<string>();
   // One request ID per submission attempt: reused when retrying the same link after an
   // uncertain failure, replaced once the link changes or the submission is settled.
   const pendingSubmit = useRef<{ url: string; requestId: string } | undefined>(undefined);
@@ -345,13 +346,13 @@ function Lobby() {
     submitLink(link);
   }
 
-  // Only supported video links reach the backend; other text gets the search fallback.
+  // Only supported video links reach the backend; other text searches the song catalog.
   async function submitLink(text: string) {
     const url = youTubeVideoUrl(text);
     if (!url || adding) return;
     if (pendingSubmit.current?.url !== url) pendingSubmit.current = { url, requestId: newRequestId() };
     const { requestId } = pendingSubmit.current;
-    setAdding(true);
+    setAdding(url);
     try {
       await mutate("add", (m) => submitEntry(m, url, requestId));
       pendingSubmit.current = undefined;
@@ -362,7 +363,7 @@ function Lobby() {
       if (err instanceof QueueError && err.code && ADD_ERRORS[err.code]) setError(ADD_ERRORS[err.code]);
       addFailed.current = true;
     } finally {
-      setAdding(false);
+      setAdding(undefined);
     }
   }
 
@@ -497,20 +498,22 @@ function Lobby() {
           <input
             value={link}
             onChange={(e) => editLink(e.target.value)}
-            placeholder="Paste a YouTube link"
+            placeholder="Song name or YouTube link"
             className="flex-1 min-w-0 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
           />
           <button
             type="submit"
-            disabled={adding || !linkUrl}
+            disabled={!!adding || !linkUrl}
             className="px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
           >
-            {adding ? "Adding…" : "Add music"}
+            {adding && adding === linkUrl ? "Adding…" : "Add music"}
           </button>
         </form>
         {!linkUrl && (
-          <YouTubeSearchFallback
+          <SongSearch
             query={link}
+            addingUrl={adding}
+            onAdd={submitLink}
             onPasteLink={(text) => {
               editLink(text);
               submitLink(text);
@@ -572,7 +575,7 @@ function Lobby() {
         <div className="w-full max-w-4xl rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 p-8 text-center">
           <p className="font-semibold text-zinc-200">{queue ? "Queue is empty" : "Loading queue…"}</p>
           <p className="mt-2 text-sm text-zinc-500">
-            Add a YouTube link above to start playback
+            Search for a song or paste a YouTube link above to start playback
             {isHost ? " on this device." : " on the host's device."}
           </p>
         </div>
