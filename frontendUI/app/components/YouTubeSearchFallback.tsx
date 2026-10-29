@@ -35,7 +35,7 @@ export default function YouTubeSearchFallback({
 
   return (
     <div className="w-full flex flex-col gap-2">
-      <div className="flex flex-col sm:flex-row gap-2">
+      <div className="flex flex-col sm:flex-row gap-3">
         <a
           href={youTubeSearchUrl(text)}
           target="_blank"
