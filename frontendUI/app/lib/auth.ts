@@ -39,6 +39,21 @@ export async function getToken(): Promise<string | undefined> {
   return accessToken ?? refresh();
 }
 
+/**
+ * The signed-in account's user ID, read from the access token's `sub` claim.
+ * For UI decisions only (e.g. showing host controls); the server still authorizes every call.
+ */
+export async function currentUserId(): Promise<string | undefined> {
+  const token = await getToken();
+  if (!token) return undefined;
+  try {
+    const payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return String(JSON.parse(atob(payload)).sub);
+  } catch {
+    return undefined;
+  }
+}
+
 export function login(returnTo: string) {
   window.location.assign(
     "/api/auth/google/start?" + new URLSearchParams({ return_to: returnTo }),
