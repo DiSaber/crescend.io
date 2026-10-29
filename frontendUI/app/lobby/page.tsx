@@ -522,7 +522,7 @@ function Lobby() {
       {notice && (
         <p className="text-amber-300 text-sm">
           {notice}{" "}
-          <button type="button" onClick={() => setNotice(undefined)} className="underline text-zinc-400">dismiss</button>
+          <button type="button" onClick={() => setNotice(undefined)} className="min-h-11 px-2 underline text-zinc-400">dismiss</button>
         </p>
       )}
 
