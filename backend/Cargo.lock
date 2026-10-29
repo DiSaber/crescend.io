@@ -166,6 +166,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures-util",
+ "html-escape",
  "jsonwebtoken",
  "openidconnect",
  "rand 0.10.3",
@@ -180,6 +181,7 @@ dependencies = [
  "time",
  "tokio",
  "tower-http 0.7.1",
+ "unicode-normalization",
  "url",
  "utoipa",
  "utoipa-scalar",
@@ -1088,6 +1090,12 @@ checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
 ]
+
+[[package]]
+name = "html-escape"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "491194d601b4fa9fac3c9571e014070a0ad1bc3392d1bc10419695196a8b3cc3"
 
 [[package]]
 name = "http"

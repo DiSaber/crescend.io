@@ -152,6 +152,7 @@ async fn local_connection(f: &Fixture, id: &str) -> crate::lobbies::updates::Con
         .unwrap();
     crate::lobbies::updates::Connection::new(
         AppState {
+            search: crate::search::SearchService::disabled(),
             metadata: crate::youtube::MetadataClient::new().unwrap(),
             database: f.database.clone(),
             auth: f.auth.clone(),

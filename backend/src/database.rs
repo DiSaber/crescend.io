@@ -1,5 +1,6 @@
 use std::{str::FromStr, time::Duration};
 
+pub mod catalog;
 pub mod lobbies;
 pub mod queue;
 
@@ -82,6 +83,7 @@ impl Database {
 
         self.create_lobby_tables().await?;
         self.create_queue_tables().await?;
+        self.create_catalog_tables().await?;
         Ok(())
     }
 
@@ -233,6 +235,9 @@ impl Database {
                 interval.tick().await;
 
                 let now = Utc::now();
+                if database.cleanup_catalog(now.timestamp()).await.is_err() {
+                    eprintln!("Catalog cleanup temporarily unavailable");
+                }
                 if let Err(error) = database.delete_expired_lobbies(now).await {
                     eprintln!("failed to delete expired lobbies: {error}");
                 }
