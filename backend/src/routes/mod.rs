@@ -1,6 +1,7 @@
 mod auth;
 mod lobbies;
 mod queue;
+mod songs;
 mod youtube;
 
 use crate::auth::JwtAuth;
@@ -14,7 +15,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -56,6 +57,7 @@ impl Modify for Security {
 pub fn router(jwt: JwtAuth) -> Router<AppState> {
     let protected = Router::new()
         .nest("/api/lobbies", lobbies::router())
+        .route("/api/songs/search", axum::routing::get(songs::search))
         .route_layer(AsyncRequireAuthorizationLayer::new(jwt))
         .layer(axum::middleware::map_response(lobby_no_store));
     Router::new()
@@ -201,4 +203,17 @@ mod lobby_documentation_tests {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
     }
+}
+
+#[test]
+fn search_openapi_security_statuses_and_schema() {
+    use utoipa::OpenApi;
+    let doc = serde_json::to_value(ApiDoc::openapi()).unwrap();
+    let op = &doc["paths"]["/api/songs/search"]["get"];
+    assert_eq!(op["security"][0]["bearer_auth"], serde_json::json!([]));
+    for status in ["200", "400", "401", "414", "500", "503"] {
+        assert!(op["responses"][status].is_object());
+    }
+    assert!(op["requestBody"].is_null());
+    assert!(doc["components"]["schemas"]["SearchResponse"].is_object());
 }

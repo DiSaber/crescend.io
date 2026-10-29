@@ -124,6 +124,7 @@ mod tests {
         })
         .unwrap();
         crate::app_state::AppState {
+            search: crate::search::SearchService::disabled(),
             database: crate::database::Database {
                 db_pool: sqlx::sqlite::SqlitePoolOptions::new()
                     .connect_lazy("sqlite::memory:")

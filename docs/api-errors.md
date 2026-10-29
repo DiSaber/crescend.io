@@ -38,3 +38,16 @@ return `409 idempotency_conflict`. Ended/foreign generations return
 `403 membership_forbidden`. Storage contention, pool failure, identity allocation
 or checked revision exhaustion return `503 temporarily_unavailable`; unexpected
 storage failures return sanitized `500 internal_error`. Failures preserve queue state.
+
+## Song search errors
+
+All song search responses, including authentication errors, use `Cache-Control: no-store`.
+`400 invalid_search_request` covers missing/empty/overlong q, unknown or duplicate
+parameters, invalid more/encoding and nonempty bodies. `414 search_uri_too_long`
+means the raw query string exceeds 8 KiB. `401 unauthorized` uses existing bearer
+verification before any catalog or allowance work. Catalog read failure/deadline
+returns `503 temporarily_unavailable`; unexpected internal failures use the safe
+`500 internal_error` envelope. Provider details, keys and internal SQL are never
+returned. Missing credentials, exhausted application allowance and provider
+failures instead return 200 with catalog results and a typed discovery status;
+they do not produce 429 or 502. See [song search](song-search-api.md).

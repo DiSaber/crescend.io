@@ -6,6 +6,7 @@ mod lobbies;
 mod models;
 mod queue;
 mod routes;
+mod search;
 mod youtube;
 
 use crate::{app_state::AppState, database::Database};
@@ -27,9 +28,26 @@ async fn main() {
         .create_tables()
         .await
         .expect("Database tables should be created");
+    let search_config =
+        search::config::SearchConfig::from_env().expect("Search configuration must be valid");
+    if database.cleanup_catalog((auth.clock)()).await.is_err() {
+        eprintln!("Catalog startup maintenance temporarily unavailable");
+    }
+    database
+        .import_starters(
+            include_str!("../resources/starter-songs.json"),
+            (auth.clock)(),
+        )
+        .await
+        .expect("Starter catalog import failed");
     database.start_cleanup();
 
     let app = routes::router(auth.jwt.clone()).with_state(AppState {
+        search: search::SearchService::new(
+            search_config,
+            auth.clock.clone(),
+            youtube::search::SearchClient::new().expect("Search client initialization failed"),
+        ),
         metadata: youtube::MetadataClient::new().expect("Metadata client initialization failed"),
         database,
         auth,

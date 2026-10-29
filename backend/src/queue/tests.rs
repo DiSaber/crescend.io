@@ -194,6 +194,7 @@ impl Fixture {
     async fn http(&self) -> (String, tokio::task::JoinHandle<()>) {
         let app =
             crate::routes::router(self.auth.jwt.clone()).with_state(crate::app_state::AppState {
+                search: crate::search::SearchService::disabled(),
                 metadata: self.metadata.clone(),
                 database: self.database.clone(),
                 auth: self.auth.clone(),

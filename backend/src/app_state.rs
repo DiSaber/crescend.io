@@ -4,6 +4,7 @@ use crate::{auth::Auth, database::Database};
 
 #[derive(Clone)]
 pub struct AppState {
+    pub search: Arc<crate::search::SearchService>,
     pub metadata: crate::youtube::MetadataClient,
     pub database: Database,
     pub lobby_updates: crate::lobbies::updates::LobbyUpdates,
