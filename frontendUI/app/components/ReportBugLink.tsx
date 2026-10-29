@@ -16,19 +16,23 @@ function buildReportUrl(): string {
   return `${NEW_ISSUE_URL}?${params.toString()}`;
 }
 
+// In the page flow on phones and tablets, below the content, so it never covers lobby
+// controls while scrolling; pinned to the corner only on wide screens with free margins.
 export default function ReportBugLink() {
   return (
-    <a
-      href={NEW_ISSUE_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={(e) => {
-        e.preventDefault();
-        window.open(buildReportUrl(), "_blank", "noopener,noreferrer");
-      }}
-      className="fixed bottom-2 right-3 z-50 text-xs text-zinc-400 hover:text-[#FF0048] underline-offset-2 hover:underline transition"
-    >
-      Report a bug
-    </a>
+    <footer className="w-full flex justify-end bg-[#1a0b29] px-3 xl:fixed xl:bottom-2 xl:right-3 xl:w-auto xl:bg-transparent xl:px-0 z-50">
+      <a
+        href={NEW_ISSUE_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          e.preventDefault();
+          window.open(buildReportUrl(), "_blank", "noopener,noreferrer");
+        }}
+        className="min-h-11 inline-flex items-center text-xs text-zinc-400 hover:text-[#FF0048] underline-offset-2 hover:underline transition xl:min-h-0"
+      >
+        Report a bug
+      </a>
+    </footer>
   );
 }
