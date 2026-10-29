@@ -19,8 +19,8 @@ mod us5_votes;
 mod us6_http;
 mod us6_reordering;
 
-struct HttpFixture {
-    base: String,
+pub(crate) struct HttpFixture {
+    pub(crate) base: String,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for HttpFixture {
@@ -30,22 +30,22 @@ impl Drop for HttpFixture {
 }
 
 impl HttpFixture {
-    fn queue(&self, membership: &str) -> String {
+    pub(crate) fn queue(&self, membership: &str) -> String {
         format!("{}/api/lobbies/memberships/{membership}/queue", self.base)
     }
 }
 
-struct Fixture {
-    database: Database,
+pub(crate) struct Fixture {
+    pub(crate) database: Database,
     directory: tempfile::TempDir,
     metadata: MetadataClient,
-    upstream: wiremock::MockServer,
+    pub(crate) upstream: wiremock::MockServer,
     time: std::sync::Arc<std::sync::atomic::AtomicI64>,
     auth: std::sync::Arc<crate::auth::Auth>,
     updates: crate::lobbies::updates::LobbyUpdates,
 }
 
-const NOW: i64 = 1_800_000_000;
+pub(crate) const NOW: i64 = 1_800_000_000;
 
 #[tokio::test]
 async fn fixture_schema_and_authorization() {
@@ -112,7 +112,7 @@ impl Fixture {
         }
     }
 
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let database = Self::connect(&directory.path().join("queue.db")).await;
         database.create_tables().await.unwrap();
@@ -151,18 +151,18 @@ impl Fixture {
         }
     }
 
-    fn now(&self) -> i64 {
+    pub(crate) fn now(&self) -> i64 {
         self.time.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn account(&self, name: &str) -> crate::auth::AuthenticatedUser {
+    pub(crate) async fn account(&self, name: &str) -> crate::auth::AuthenticatedUser {
         crate::auth::AuthenticatedUser {
             id: self.database.create_user(name).await.unwrap().id,
             expires_at: NOW + 3600,
         }
     }
 
-    async fn host(&self) -> (crate::auth::AuthenticatedUser, String, String) {
+    pub(crate) async fn host(&self) -> (crate::auth::AuthenticatedUser, String, String) {
         let user = self.account("host").await;
         let view = self
             .database
@@ -176,7 +176,11 @@ impl Fixture {
         )
     }
 
-    async fn guest(&self, name: &str, code: &str) -> (crate::auth::AuthenticatedUser, String) {
+    pub(crate) async fn guest(
+        &self,
+        name: &str,
+        code: &str,
+    ) -> (crate::auth::AuthenticatedUser, String) {
         let user = self.account(name).await;
         let view = self
             .database
@@ -207,12 +211,12 @@ impl Fixture {
         (base, task)
     }
 
-    async fn server(&self) -> HttpFixture {
+    pub(crate) async fn server(&self) -> HttpFixture {
         let (base, task) = self.http().await;
         HttpFixture { base, task }
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         method: reqwest::Method,
         url: String,
@@ -223,7 +227,7 @@ impl Fixture {
             .bearer_auth(self.auth.jwt.issue(user.id).unwrap())
     }
 
-    async fn mock_metadata(&self) {
+    pub(crate) async fn mock_metadata(&self) {
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "title":"Server title", "author_name":"Server channel", "author_url":"https://youtube.com/@server", "thumbnail_url":"https://i.ytimg.com/image.jpg"

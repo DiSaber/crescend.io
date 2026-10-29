@@ -2,6 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 pub mod lobbies;
 pub mod queue;
+pub mod songs;
 
 use chrono::{DateTime, Timelike, Utc};
 use sqlx::{
@@ -82,6 +83,7 @@ impl Database {
 
         self.create_lobby_tables().await?;
         self.create_queue_tables().await?;
+        self.create_song_tables().await?;
         Ok(())
     }
 

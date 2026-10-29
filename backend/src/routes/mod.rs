@@ -1,6 +1,7 @@
 mod auth;
 mod lobbies;
 mod queue;
+mod songs;
 mod youtube;
 
 use crate::auth::JwtAuth;
@@ -14,12 +15,13 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, songs::search, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
         (name = "Lobbies", description = "Lobby endpoints"),
         (name = "Queue", description = "Persistent membership-bound song queue"),
+        (name = "Songs", description = "Shared song catalog search"),
         (name = "YouTube", description = "YouTube endpoints")
     )
 )]
@@ -56,6 +58,7 @@ impl Modify for Security {
 pub fn router(jwt: JwtAuth) -> Router<AppState> {
     let protected = Router::new()
         .nest("/api/lobbies", lobbies::router())
+        .nest("/api/songs", songs::router())
         .route_layer(AsyncRequireAuthorizationLayer::new(jwt))
         .layer(axum::middleware::map_response(lobby_no_store));
     Router::new()

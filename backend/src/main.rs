@@ -6,6 +6,7 @@ mod lobbies;
 mod models;
 mod queue;
 mod routes;
+mod songs;
 mod youtube;
 
 use crate::{app_state::AppState, database::Database};
@@ -27,6 +28,10 @@ async fn main() {
         .create_tables()
         .await
         .expect("Database tables should be created");
+    database
+        .load_starter_songs(&songs::starter_songs())
+        .await
+        .expect("Starter songs should be loaded");
     database.start_cleanup();
 
     let app = routes::router(auth.jwt.clone()).with_state(AppState {

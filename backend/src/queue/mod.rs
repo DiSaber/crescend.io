@@ -36,7 +36,8 @@ pub(crate) async fn submit(
             MetadataError::Service => QueueError::Upstream,
             MetadataError::Unavailable => QueueError::Metadata,
         })?;
-    app.database
+    let response = app
+        .database
         .submit_queue(
             user,
             membership,
@@ -45,7 +46,17 @@ pub(crate) async fn submit(
             || (app.auth.clock)(),
             || EntryId::random().map_err(|_| QueueError::Unavailable),
         )
-        .await
+        .await?;
+    // The catalog is best effort: the song is already queued, so a failure here is logged only.
+    if response.changed
+        && let Err(error) = app
+            .database
+            .record_queued_song(&metadata, (app.auth.clock)())
+            .await
+    {
+        eprintln!("failed to record queued song in catalog: {error}");
+    }
+    Ok(response)
 }
 
 #[derive(Debug)]
@@ -80,7 +91,7 @@ impl From<sqlx::Error> for QueueError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 pub(crate) fn commits()
