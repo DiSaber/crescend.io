@@ -230,3 +230,41 @@ async fn invalid_seed_shape_and_storage_rollback() {
         0
     );
 }
+
+#[tokio::test]
+async fn shipped_starter_songs_are_all_valid_and_searchable() {
+    // Invalid records are skipped at startup with only a log line, so check the file here.
+    let input = include_str!("../../../resources/starter-songs.json");
+    let entries: Vec<serde_json::Value> = serde_json::from_str(input).unwrap();
+    let mut ids = std::collections::HashSet::new();
+    for mut value in entries.clone() {
+        let id = value["video_id"].as_str().unwrap().to_owned();
+        assert!(ids.insert(id.clone()), "duplicate {id}");
+        value["watch_url"] = format!("https://www.youtube.com/watch?v={id}").into();
+        let snapshot: crate::models::search::Snapshot = serde_json::from_value(value).unwrap();
+        assert!(snapshot.valid(), "invalid starter song {id}");
+    }
+    let f = Fixture::new().await;
+    f.database.import_starters(input, NOW).await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_songs")
+        .fetch_one(&f.database.db_pool)
+        .await
+        .unwrap();
+    assert_eq!(count, entries.len() as i64);
+    for (q, id) in [
+        ("crab rave", "LDU_Txk06tM"),
+        ("beyonce", "ViwtNLUqkMY"),
+        ("senorita", "Pkh8UtuejGw"),
+    ] {
+        let results = f
+            .database
+            .search_catalog(&super::super::normalize::normalize(q), NOW)
+            .await
+            .unwrap();
+        assert_eq!(
+            results.first().map(|s| s.video_id.as_str()),
+            Some(id),
+            "{q}"
+        );
+    }
+}
