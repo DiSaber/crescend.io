@@ -15,7 +15,7 @@ const DISCOVERY_SKIPPED: Partial<Record<DiscoveryStatus, string>> = {
   temporarily_unavailable: "YouTube search didn't respond",
 };
 
-type Found = { key: string; results: SongResult[]; status: DiscoveryStatus } | { key: string; error: true };
+type Found = { key: string; q: string; results: SongResult[]; status: DiscoveryStatus } | { key: string; q: string; error: true };
 
 const keyOf = (q: string, more: boolean) => `${more ? "more" : "first"}:${q}`;
 
@@ -45,7 +45,7 @@ export default function SongSearch({
   const key = keyOf(q, more);
   // Responses are tagged with the request they answer, so a slow reply never shows
   // under newer text.
-  const [found, setFound] = useState<Found>({ key: "", results: [], status: "not_needed" });
+  const [found, setFound] = useState<Found>({ key: "", q: "", results: [], status: "not_needed" });
 
   useEffect(() => {
     if (q.length < MIN_CHARS) return;
@@ -54,9 +54,9 @@ export default function SongSearch({
     const timer = setTimeout(
       () => {
         searchSongs(q, more, controller.signal)
-          .then((response) => setFound({ key: requestKey, results: response.results, status: response.discovery.status }))
+          .then((response) => setFound({ key: requestKey, q, results: response.results, status: response.discovery.status }))
           .catch(() => {
-            if (!controller.signal.aborted) setFound({ key: requestKey, error: true });
+            if (!controller.signal.aborted) setFound({ key: requestKey, q, error: true });
           });
       },
       more ? 0 : DEBOUNCE_MS,
@@ -69,7 +69,10 @@ export default function SongSearch({
 
   if (q.length < MIN_CHARS) return null;
   const settled = found.key === key;
-  const results = "error" in found ? null : found.results;
+  // While a new search runs, keep showing (dimmed) only results for text this one extends
+  // or trims, never results for an unrelated earlier search.
+  const related = q.startsWith(found.q) || found.q.startsWith(q);
+  const results = "error" in found || (!settled && !related) ? null : found.results;
 
   if (settled && !results?.length) {
     const skipped = "error" in found ? undefined : DISCOVERY_SKIPPED[found.status];
