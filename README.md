@@ -56,6 +56,8 @@ With the backend running, open [Scalar](http://localhost:3000/scalar) to explore
 
 See [browser authentication](docs/browser-auth.md) for login, access-token bootstrap, logout, deployment, and migration examples.
 
+See [backend song search](docs/song-search-api.md) for catalog search, optional discovery configuration, and submission of returned links.
+
 ### Environment variables
 
 For development, put these required variables in `backend/.env`:

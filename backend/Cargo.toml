@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+unicode-normalization = "0.1"
+html-escape = "0.3"
 futures-util = "0.3.34"
 dotenvy = "0.15.7"
 axum = "0.8.9"
