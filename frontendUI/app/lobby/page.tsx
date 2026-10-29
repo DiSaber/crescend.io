@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useRouter } from "next/navigation";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
+import YouTubeSearchFallback from "../components/YouTubeSearchFallback";
 import { currentUserId } from "../lib/auth";
 import {
   getCurrent,
@@ -27,6 +28,7 @@ import {
   type QueueEntry,
   type QueueView,
 } from "../lib/queue";
+import { youTubeVideoUrl } from "../lib/youtube";
 
 type YouTubePlayerInstance = {
   destroy: () => void;
@@ -323,8 +325,13 @@ function Lobby() {
 
   async function addSong(e: FormEvent) {
     e.preventDefault();
-    const url = link.trim();
-    if (!url) return;
+    submitLink(link);
+  }
+
+  // Only supported video links reach the backend; other text gets the search fallback.
+  async function submitLink(text: string) {
+    const url = youTubeVideoUrl(text);
+    if (!url || adding) return;
     if (pendingSubmit.current?.url !== url) pendingSubmit.current = { url, requestId: newRequestId() };
     const { requestId } = pendingSubmit.current;
     setAdding(true);
@@ -351,6 +358,7 @@ function Lobby() {
 
   const reportLoadError = useCallback((message: string) => setError(message), []);
 
+  const linkUrl = youTubeVideoUrl(link);
   const current = queue?.current ?? null;
   const upcoming = queue?.upcoming ?? [];
   const isHost = !!lobby && !!userId && lobby.owner_user_id === userId;
@@ -465,21 +473,32 @@ function Lobby() {
         </div>
       </div>
 
-      <form onSubmit={addSong} className="flex gap-3 w-full max-w-4xl">
-        <input
-          value={link}
-          onChange={(e) => setLink(e.target.value)}
-          placeholder="Paste a YouTube link"
-          className="flex-1 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
-        />
-        <button
-          type="submit"
-          disabled={adding || !link.trim()}
-          className="px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
-        >
-          {adding ? "Adding…" : "Add music"}
-        </button>
-      </form>
+      <div className="w-full max-w-4xl flex flex-col gap-3">
+        <form onSubmit={addSong} className="flex gap-3 w-full">
+          <input
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="Paste a YouTube link"
+            className="flex-1 min-w-0 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+          />
+          <button
+            type="submit"
+            disabled={adding || !linkUrl}
+            className="px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
+          >
+            {adding ? "Adding…" : "Add music"}
+          </button>
+        </form>
+        {!linkUrl && (
+          <YouTubeSearchFallback
+            query={link}
+            onPasteLink={(text) => {
+              setLink(text);
+              submitLink(text);
+            }}
+          />
+        )}
+      </div>
       {error && <p className="text-red-400">{error}</p>}
       {notice && (
         <p className="text-amber-300 text-sm">
