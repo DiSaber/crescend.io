@@ -160,6 +160,13 @@ function YouTubePlayer({
   );
 }
 
+// Submission failures worth explaining to a guest who just pasted a link.
+const ADD_ERRORS: Record<string, string> = {
+  invalid_url: "That isn't a YouTube video link.",
+  metadata_unavailable: "Couldn't add that video. It may be private, removed, or not allowed to play outside YouTube.",
+  upstream_unavailable: "YouTube didn't respond. Try again in a moment.",
+};
+
 const ENDED_MESSAGES = {
   left: "You left the session.",
   closed: "The host closed the session.",
@@ -183,6 +190,8 @@ function Lobby() {
   // One request ID per submission attempt: reused when retrying the same link after an
   // uncertain failure, replaced once the link changes or the submission is settled.
   const pendingSubmit = useRef<{ url: string; requestId: string } | undefined>(undefined);
+  // Whether the error on screen came from the last add, so editing the link clears it.
+  const addFailed = useRef(false);
 
   // The membership generation and queue revision we last applied. Responses for any
   // other generation (left/rejoined) or with a lower revision are stale and ignored.
@@ -323,6 +332,14 @@ function Lobby() {
     }
   }
 
+  function editLink(text: string) {
+    setLink(text);
+    if (addFailed.current) {
+      addFailed.current = false;
+      setError(undefined);
+    }
+  }
+
   async function addSong(e: FormEvent) {
     e.preventDefault();
     submitLink(link);
@@ -342,6 +359,8 @@ function Lobby() {
     } catch (err) {
       // Definite rejections settle the attempt; network/5xx keep the ID for a safe retry.
       if (err instanceof QueueError && err.status < 500) pendingSubmit.current = undefined;
+      if (err instanceof QueueError && err.code && ADD_ERRORS[err.code]) setError(ADD_ERRORS[err.code]);
+      addFailed.current = true;
     } finally {
       setAdding(false);
     }
@@ -390,7 +409,7 @@ function Lobby() {
 
   const entryControls = (entry: QueueEntry, index?: number) => {
     return (
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1">
         <span className="px-2 text-xs text-zinc-400" title="Skip votes from guests">
           {voteLabel(entry)}
         </span>
@@ -399,7 +418,7 @@ function Lobby() {
             type="button"
             onClick={() => mutate(`vote-${entry.id}`, (m) => vote(m, entry.id)).catch(() => {})}
             disabled={entry.has_voted || !!busy}
-            className="rounded px-2 py-1 text-sm text-zinc-200 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50"
+            className="min-h-11 rounded-lg px-3 text-sm text-zinc-200 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50"
           >
             {entry.has_voted ? "Voted" : "Vote skip"}
           </button>
@@ -411,7 +430,7 @@ function Lobby() {
               onClick={() => mutate(`move-${entry.id}`, (m) => moveEntry(m, entry.id, queue!.revision, index - 1)).catch(() => {})}
               disabled={index === 0 || !!busy}
               aria-label={`Move ${entry.video.title} up`}
-              className="rounded px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
+              className="min-h-11 min-w-11 rounded-lg text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
             >
               ↑
             </button>
@@ -420,7 +439,7 @@ function Lobby() {
               onClick={() => mutate(`move-${entry.id}`, (m) => moveEntry(m, entry.id, queue!.revision, index + 1)).catch(() => {})}
               disabled={index === upcoming.length - 1 || !!busy}
               aria-label={`Move ${entry.video.title} down`}
-              className="rounded px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
+              className="min-h-11 min-w-11 rounded-lg text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
             >
               ↓
             </button>
@@ -432,7 +451,7 @@ function Lobby() {
             onClick={() => mutate(`veto-${entry.id}`, (m) => veto(m, entry.id)).catch(() => {})}
             disabled={!!busy}
             aria-label={`Veto ${entry.video.title}`}
-            className="rounded px-2 py-1 text-sm text-red-300 hover:bg-red-950 disabled:opacity-50"
+            className="min-h-11 rounded-lg px-3 text-sm text-red-300 hover:bg-red-950 disabled:opacity-50"
           >
             Veto
           </button>
@@ -477,7 +496,7 @@ function Lobby() {
         <form onSubmit={addSong} className="flex gap-3 w-full">
           <input
             value={link}
-            onChange={(e) => setLink(e.target.value)}
+            onChange={(e) => editLink(e.target.value)}
             placeholder="Paste a YouTube link"
             className="flex-1 min-w-0 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
           />
@@ -493,7 +512,7 @@ function Lobby() {
           <YouTubeSearchFallback
             query={link}
             onPasteLink={(text) => {
-              setLink(text);
+              editLink(text);
               submitLink(text);
             }}
           />
@@ -509,19 +528,19 @@ function Lobby() {
 
       {current ? (
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
-          <div className="flex justify-between items-center gap-4 mb-3">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4 mb-3">
             <div className="min-w-0">
               <p className="font-semibold truncate">Now playing: {current.video.title}</p>
               <p className="text-xs text-zinc-400 truncate">
                 {current.video.author_name} · added by {contributor(current)}
               </p>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center justify-end gap-1 sm:shrink-0">
               {isHost && (
                 <button
                   onClick={() => advanceFrom(current, "skip")}
                   disabled={!!busy}
-                  className="text-sm underline text-zinc-400 hover:text-white shrink-0 mr-2 disabled:opacity-50"
+                  className="min-h-11 px-3 text-sm underline text-zinc-400 hover:text-white disabled:opacity-50"
                 >
                   Skip
                 </button>
@@ -564,16 +583,16 @@ function Lobby() {
           <h2 className="font-semibold mb-3">Up next</h2>
           <ol className="space-y-2">
             {upcoming.map((entry, index) => (
-              <li key={entry.id} className="flex items-center gap-3 rounded-lg bg-zinc-800 p-2">
+              <li key={entry.id} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-800 p-2">
                 <span className="w-6 text-center text-sm text-zinc-500">{index + 1}</span>
                 <img src={entry.video.thumbnail_url} alt="" className="h-12 w-20 rounded object-cover" />
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 basis-32">
                   <p className="truncate text-sm font-medium">{entry.video.title}</p>
                   <p className="truncate text-xs text-zinc-400">
                     {entry.video.author_name} · added by {contributor(entry)}
                   </p>
                 </div>
-                {entryControls(entry, index)}
+                <div className="basis-full sm:basis-auto">{entryControls(entry, index)}</div>
               </li>
             ))}
           </ol>
@@ -608,7 +627,7 @@ function VotingPolicy({
         onChange={(e) =>
           onChange(e.target.value === "fixed" ? { mode: "fixed", count: Math.max(1, Number(count) || 1) } : { mode: "majority" })
         }
-        className="rounded bg-zinc-800 border border-zinc-700 px-2 py-1"
+        className="min-h-11 rounded bg-zinc-800 border border-zinc-700 px-2"
       >
         <option value="majority">a majority of guests</option>
         <option value="fixed">a fixed number of votes</option>
@@ -624,7 +643,7 @@ function VotingPolicy({
             const n = Math.floor(Number(count));
             if (n >= 1 && n !== voting.fixed_count) onChange({ mode: "fixed", count: n });
           }}
-          className="w-16 rounded bg-zinc-800 border border-zinc-700 px-2 py-1"
+          className="min-h-11 w-16 rounded bg-zinc-800 border border-zinc-700 px-2"
         />
       )}
       <span className="text-zinc-500">
