@@ -232,7 +232,7 @@ impl Database {
     ) -> Result<CurrentLobby, LobbyError> {
         self.join_lobby_outcome_with(user_id, code, clock, allocate)
             .await
-            .map(|(view, _)| view)
+            .map(|(view, _, _)| view)
     }
 
     pub(crate) async fn join_lobby_outcome_with(
@@ -241,7 +241,7 @@ impl Database {
         code: &str,
         clock: impl Fn() -> i64,
         mut allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
-    ) -> Result<(CurrentLobby, bool), LobbyError> {
+    ) -> Result<(CurrentLobby, bool, Option<(LobbyId, i64)>), LobbyError> {
         let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
         let now = timestamp(clock())?;
         let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
@@ -264,11 +264,38 @@ impl Database {
                 .bind(user_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let changed = existing.is_none();
-        let membership_id = if let Some((id, target)) = existing {
-            if target != lobby_id {
-                return Err(LobbyError::AlreadyInLobby);
+        let mut departed = None;
+        let existing = if let Some((id, target)) = existing {
+            if target == lobby_id {
+                Some(id)
+            } else {
+                let (old_owner, old_revision): (i64, i64) =
+                    sqlx::query_as("SELECT owner_user_id, revision FROM lobbies WHERE id = ?")
+                        .bind(target.as_str())
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if old_owner == user_id {
+                    return Err(LobbyError::AlreadyInLobby);
+                }
+                let old_revision = old_revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
+                sqlx::query("DELETE FROM lobby_memberships WHERE id = ?")
+                    .bind(id.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                super::queue::reevaluate(&mut tx, target.as_str()).await?;
+                sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+                    .bind(old_revision)
+                    .bind(target.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                departed = Some((target, old_revision));
+                None
             }
+        } else {
+            None
+        };
+        let changed = existing.is_none();
+        let membership_id = if let Some(id) = existing {
             id
         } else {
             let mut allocated = None;
@@ -318,7 +345,11 @@ impl Database {
         if changed {
             super::queue::record_commit(view.lobby.as_ref().unwrap().id.as_str(), revision);
         }
-        Ok((view, changed))
+        #[cfg(test)]
+        if let Some((id, revision)) = &departed {
+            super::queue::record_commit(id.as_str(), *revision);
+        }
+        Ok((view, changed, departed))
     }
 
     pub(super) async fn create_lobby_tables(&self) -> Result<(), sqlx::Error> {

@@ -162,11 +162,15 @@ async fn competing_targets_and_create_join_have_one_winner() {
                 }
             }
         );
-        assert_eq!(usize::from(x.is_ok()) + usize::from(y.is_ok()), 1);
-        assert!(matches!(
-            x.err().or(y.err()).unwrap(),
-            LobbyError::AlreadyInLobby
-        ));
+        if create {
+            assert_eq!(usize::from(x.is_ok()) + usize::from(y.is_ok()), 1);
+            assert!(matches!(
+                x.err().or(y.err()).unwrap(),
+                LobbyError::AlreadyInLobby
+            ));
+        } else {
+            assert!(x.is_ok() && y.is_ok());
+        }
         assert_eq!(f.count("lobby_memberships").await, 3);
     }
 }

@@ -62,6 +62,15 @@ async fn joining_reactivates_a_qualifying_vote_inside_membership_commit() {
 
 #[tokio::test]
 async fn departure_rechecks_majority_and_rejoin_restores_one_vote() {
+    check_departure(false).await;
+}
+
+#[tokio::test]
+async fn transfer_rechecks_majority_and_rejoin_restores_one_vote() {
+    check_departure(true).await;
+}
+
+async fn check_departure(transfer: bool) {
     let f = Fixture::new().await;
     let (host, membership, code) = f.host().await;
     let mut guests = Vec::new();
@@ -95,10 +104,23 @@ async fn departure_rechecks_majority_and_rejoin_restores_one_vote() {
         .unwrap()
         .revision
         .value();
-    f.database
-        .leave_lobby(guests[3].0.id, &guests[3].1, || f.now())
-        .await
-        .unwrap();
+    if transfer {
+        let target_host = f.account("target-host").await;
+        let target = f
+            .database
+            .create_owned_lobby(target_host.id, || f.now())
+            .await
+            .unwrap();
+        f.database
+            .join_lobby(guests[3].0.id, &target.lobby.unwrap().join_code, || f.now())
+            .await
+            .unwrap();
+    } else {
+        f.database
+            .leave_lobby(guests[3].0.id, &guests[3].1, || f.now())
+            .await
+            .unwrap();
+    }
     let view = f
         .database
         .queue_view(&host, &membership, || f.now())

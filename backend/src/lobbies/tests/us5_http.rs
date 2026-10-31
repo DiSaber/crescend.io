@@ -317,3 +317,66 @@ async fn queued_old_stream_never_follows_rejoin_and_saved_expiry_survives_cleanu
         assert!(stream.next().await.is_none());
     }
 }
+
+#[tokio::test]
+async fn guest_transfer_is_atomic_and_notifies_both_lobbies() {
+    let f = Fixture::new().await;
+    let (owner, user, member) = setup(&f).await;
+    let other = f.database.create_user("transfer-target").await.unwrap().id;
+    let target =
+        serde_json::to_value(f.database.create_owned_lobby(other, || NOW).await.unwrap()).unwrap();
+    let old_id = member["membership_id"].as_str().unwrap();
+    let mut host_stream = connect(&f, owner["membership_id"].as_str().unwrap(), f.user).await;
+    let mut guest_stream = connect(&f, old_id, user).await;
+    frame(&mut host_stream).await;
+    frame(&mut guest_stream).await;
+    let mut hints = f.updates.subscribe();
+
+    // Failure after removing the old membership must roll back the entire move.
+    sqlx::query("CREATE TRIGGER reject_transfer BEFORE INSERT ON lobby_memberships BEGIN SELECT RAISE(ABORT, 'test'); END")
+        .execute(&f.database.db_pool).await.unwrap();
+    let response = f
+        .client
+        .post(format!("{}/api/lobbies/join", f.base))
+        .bearer_auth(f.auth.jwt.issue(user).unwrap())
+        .json(&json!({"join_code":target["lobby"]["join_code"]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 500);
+    assert_eq!(
+        serde_json::to_value(f.database.current_lobby(user, || NOW).await.unwrap()).unwrap(),
+        member
+    );
+    assert!(hints.try_recv().is_err());
+    sqlx::query("DROP TRIGGER reject_transfer")
+        .execute(&f.database.db_pool)
+        .await
+        .unwrap();
+
+    let moved = join(&f, user, &target).await;
+    assert_ne!(moved["membership_id"], member["membership_id"]);
+    assert_eq!(moved["lobby"]["id"], target["lobby"]["id"]);
+    assert_eq!(hints.recv().await.unwrap().1, 3);
+    assert_eq!(hints.recv().await.unwrap().1, 2);
+    assert!(
+        frame(&mut guest_stream)
+            .await
+            .contains("\"reason\":\"left\"")
+    );
+    assert!(frame(&mut host_stream).await.contains("\"revision\":\"3\""));
+    assert_eq!(connect(&f, old_id, user).await.status(), 403);
+    let old = f
+        .database
+        .current_lobby(f.user, || NOW)
+        .await
+        .unwrap()
+        .lobby
+        .unwrap();
+    assert_eq!(old.members.len(), 1);
+    assert_eq!(leave(&f, user, old_id).await.status(), 204);
+    assert_eq!(
+        serde_json::to_value(f.database.current_lobby(user, || NOW).await.unwrap()).unwrap(),
+        moved
+    );
+}
