@@ -23,6 +23,20 @@ docker compose -f docker-compose.yml -f docker-compose.hosting.yml up --build
 
 Or uncomment `COMPOSE_FILE` in `.env` and keep using plain `docker compose up --build`. The `Caddyfile` already disables buffering for the lobby event stream.
 
+### Hosting behind a TLS-terminating tunnel (Cloudflare Tunnel etc.)
+
+When a tunnel or reverse proxy already terminates HTTPS, keep Caddy on plain HTTP and skip the hosting override. In `.env`:
+
+```bash
+GOOGLE_REDIRECT_URI=https://<hostname>/api/auth/google/callback
+SITE_ADDRESS=:3000   # plain HTTP inside the box; the tunnel serves HTTPS
+HTTP_PORT=8796       # loopback port the tunnel forwards to (any free port)
+```
+
+Point the tunnel at `http://127.0.0.1:<HTTP_PORT>`. The HTTPS redirect URI makes the backend issue `Secure` cookies and only trust `Origin: https://<hostname>`, so users must reach the app through the public hostname, not the loopback port. Redeploy with `git pull && docker compose up -d --build --force-recreate`.
+
+The class demo runs this way at https://crescendio.backtitleai.com, with runbook in [docs/hosting-runbook.md](docs/hosting-runbook.md).
+
 ## Backend
 
 ### Prerequisites:
@@ -55,6 +69,8 @@ cargo run --release
 With the backend running, open [Scalar](http://localhost:3000/scalar) to explore and try the existing endpoints.
 
 See [browser authentication](docs/browser-auth.md) for login, access-token bootstrap, logout, deployment, and migration examples.
+
+See [backend song search](docs/song-search-api.md) for catalog search, optional discovery configuration, and submission of returned links.
 
 ### Environment variables
 

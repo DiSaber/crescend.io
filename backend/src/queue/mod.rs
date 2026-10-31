@@ -36,7 +36,8 @@ pub(crate) async fn submit(
             MetadataError::Service => QueueError::Upstream,
             MetadataError::Unavailable => QueueError::Metadata,
         })?;
-    app.database
+    let response = app
+        .database
         .submit_queue(
             user,
             membership,
@@ -45,7 +46,31 @@ pub(crate) async fn submit(
             || (app.auth.clock)(),
             || EntryId::random().map_err(|_| QueueError::Unavailable),
         )
-        .await
+        .await?;
+    if response.changed {
+        let song = crate::models::search::Snapshot {
+            video_id: video.id.clone(),
+            title: html_escape::decode_html_entities(&metadata.title).into_owned(),
+            artist: html_escape::decode_html_entities(&metadata.author_name).into_owned(),
+            thumbnail_url: crate::models::search::valid_thumbnail(&metadata.thumbnail_url)
+                .then(|| metadata.thumbnail_url.clone()),
+            watch_url: video.watch_url.to_string(),
+        };
+        if !matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), async {
+                #[cfg(test)]
+                tokio::time::sleep(app.search.queue_record_delay).await;
+                app.database
+                    .record_submission(response.entry_id.as_str(), &song, (app.auth.clock)())
+                    .await
+            },)
+            .await,
+            Ok(Ok(()))
+        ) {
+            eprintln!("Accepted queue contribution could not be recorded in catalog");
+        }
+    }
+    Ok(response)
 }
 
 #[derive(Debug)]

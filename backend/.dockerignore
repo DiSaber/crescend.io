@@ -1,11 +1,9 @@
 target/
-.env
-.env.*
-*.db
-*.db-shm
-*.db-wal
+node_modules/
 .git/
 Dockerfile*
 .dockerignore
 *.log*
+.env*
 coverage/
+*.db*
