@@ -135,11 +135,11 @@ async fn current_lobby(
     post, path = "/api/lobbies/join", tag = "Lobbies",
     security(("bearer_auth" = [])), request_body = JoinLobbyRequest,
     responses(
-        (status = 200, description = "Joined lobby or unchanged same-lobby membership", body = CurrentLobby),
+        (status = 200, description = "Joined lobby, atomically leaving any previous guest membership, or unchanged same-lobby membership", body = CurrentLobby),
         (status = 400, description = "Invalid JSON, field or join code", body = ErrorResponse),
         (status = 401, description = "Authentication required", body = ErrorResponse),
         (status = 404, description = "Unknown, closed or expired code", body = ErrorResponse),
-        (status = 409, description = "Already in another lobby", body = ErrorResponse),
+        (status = 409, description = "Hosting another lobby", body = ErrorResponse),
         (status = 413, description = "JSON body exceeds 1 KiB", body = ErrorResponse),
         (status = 415, description = "JSON Content-Type required", body = ErrorResponse),
         (status = 500, description = "Join failed without partial state", body = ErrorResponse),
@@ -187,7 +187,10 @@ async fn join_lobby(
         )
         .await
     {
-        Ok((view, changed)) => {
+        Ok((view, changed, departed)) => {
+            if let Some((lobby, revision)) = departed {
+                app_state.lobby_updates.publish(lobby, revision);
+            }
             if changed {
                 publish(&app_state, &view);
             }
@@ -259,7 +262,7 @@ impl IntoResponse for LobbyError {
             Self::AlreadyInLobby => (
                 StatusCode::CONFLICT,
                 "already_in_lobby",
-                "You already belong to an active lobby.",
+                "You already belong to an active lobby. If you are hosting, leave it to end the session before joining another.",
             ),
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,

@@ -52,7 +52,21 @@ export async function joinLobby(joinCode: string): Promise<CurrentLobby> {
     body: JSON.stringify({ join_code: joinCode }),
   });
   if (response.status === 404) throw new Error("No active lobby has that code.");
-  if (response.status === 409) throw new Error("You are already in another lobby. Leave it first.");
+  if (response.status === 409) {
+    const current = await getCurrent();
+    if (!current.membership_id) throw new Error("Your session changed. Try joining again.");
+    if (!window.confirm(`You're hosting another session (${current.lobby.join_code}). End it for everyone and join this one?`)) {
+      throw new Error("Your current session is still active.");
+    }
+    await leaveLobby(current.membership_id);
+    const retry = await apiFetch("/api/lobbies/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ join_code: joinCode }),
+    });
+    if (!retry.ok) throw new Error(await errorMessage(retry));
+    return retry.json();
+  }
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
