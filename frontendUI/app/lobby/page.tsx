@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useRouter } from "next/navigation";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
-import YouTubeSearchFallback from "../components/YouTubeSearchFallback";
+import SongSearch from "../components/SongSearch";
 import { currentUserId } from "../lib/auth";
 import {
   getCurrent,
@@ -39,6 +39,8 @@ type YouTubeApi = {
     element: HTMLDivElement,
     options: {
       videoId: string;
+      width?: string | number;
+      height?: string | number;
       playerVars?: Record<string, number | string>;
       events?: {
         onStateChange?: (event: { data: number }) => void;
@@ -129,6 +131,9 @@ function YouTubePlayer({
         const endedState = youtube.PlayerState?.ENDED ?? 0;
         player = new youtube.Player(container.current, {
           videoId: video.video_id,
+          // Without these YouTube uses its fixed default size instead of filling the box.
+          width: "100%",
+          height: "100%",
           playerVars: {
             autoplay: 1,
             enablejsapi: 1,
@@ -153,7 +158,7 @@ function YouTubePlayer({
   }, [video.video_id]);
 
   return (
-    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black">
+    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full">
       <div ref={container} className="absolute inset-0" />
       <noscript>JavaScript is required to play YouTube videos.</noscript>
     </div>
@@ -186,7 +191,8 @@ function Lobby() {
   const [busy, setBusy] = useState<string>();
 
   const [link, setLink] = useState("");
-  const [adding, setAdding] = useState(false);
+  // The URL being submitted, if any.
+  const [adding, setAdding] = useState<string>();
   // One request ID per submission attempt: reused when retrying the same link after an
   // uncertain failure, replaced once the link changes or the submission is settled.
   const pendingSubmit = useRef<{ url: string; requestId: string } | undefined>(undefined);
@@ -345,13 +351,13 @@ function Lobby() {
     submitLink(link);
   }
 
-  // Only supported video links reach the backend; other text gets the search fallback.
+  // Only supported video links reach the backend; other text searches the song catalog.
   async function submitLink(text: string) {
     const url = youTubeVideoUrl(text);
     if (!url || adding) return;
     if (pendingSubmit.current?.url !== url) pendingSubmit.current = { url, requestId: newRequestId() };
     const { requestId } = pendingSubmit.current;
-    setAdding(true);
+    setAdding(url);
     try {
       await mutate("add", (m) => submitEntry(m, url, requestId));
       pendingSubmit.current = undefined;
@@ -362,7 +368,7 @@ function Lobby() {
       if (err instanceof QueueError && err.code && ADD_ERRORS[err.code]) setError(ADD_ERRORS[err.code]);
       addFailed.current = true;
     } finally {
-      setAdding(false);
+      setAdding(undefined);
     }
   }
 
@@ -493,24 +499,26 @@ function Lobby() {
       </div>
 
       <div className="w-full max-w-4xl flex flex-col gap-3">
-        <form onSubmit={addSong} className="flex gap-3 w-full">
+        <form onSubmit={addSong} className="flex flex-col sm:flex-row gap-3 w-full">
           <input
             value={link}
             onChange={(e) => editLink(e.target.value)}
-            placeholder="Paste a YouTube link"
+            placeholder="Song name or YouTube link"
             className="flex-1 min-w-0 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
           />
           <button
             type="submit"
-            disabled={adding || !linkUrl}
-            className="px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
+            disabled={!!adding || !linkUrl}
+            className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
           >
-            {adding ? "Adding…" : "Add music"}
+            {adding && adding === linkUrl ? "Adding…" : "Add music"}
           </button>
         </form>
         {!linkUrl && (
-          <YouTubeSearchFallback
+          <SongSearch
             query={link}
+            addingUrl={adding}
+            onAdd={submitLink}
             onPasteLink={(text) => {
               editLink(text);
               submitLink(text);
@@ -530,8 +538,8 @@ function Lobby() {
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4 mb-3">
             <div className="min-w-0">
-              <p className="font-semibold truncate">Now playing: {current.video.title}</p>
-              <p className="text-xs text-zinc-400 truncate">
+              <p className="font-semibold line-clamp-2">Now playing: {current.video.title}</p>
+              <p className="text-xs text-zinc-400 line-clamp-2">
                 {current.video.author_name} · added by {contributor(current)}
               </p>
             </div>
@@ -572,7 +580,7 @@ function Lobby() {
         <div className="w-full max-w-4xl rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 p-8 text-center">
           <p className="font-semibold text-zinc-200">{queue ? "Queue is empty" : "Loading queue…"}</p>
           <p className="mt-2 text-sm text-zinc-500">
-            Add a YouTube link above to start playback
+            Search for a song or paste a YouTube link above to start playback
             {isHost ? " on this device." : " on the host's device."}
           </p>
         </div>
@@ -587,8 +595,8 @@ function Lobby() {
                 <span className="w-6 text-center text-sm text-zinc-500">{index + 1}</span>
                 <img src={entry.video.thumbnail_url} alt="" className="h-12 w-20 rounded object-cover" />
                 <div className="min-w-0 flex-1 basis-32">
-                  <p className="truncate text-sm font-medium">{entry.video.title}</p>
-                  <p className="truncate text-xs text-zinc-400">
+                  <p className="line-clamp-2 text-sm font-medium">{entry.video.title}</p>
+                  <p className="line-clamp-2 text-xs text-zinc-400">
                     {entry.video.author_name} · added by {contributor(entry)}
                   </p>
                 </div>
