@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { QRCodeSVG } from "qrcode.react";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
 import SongSearch from "../components/SongSearch";
@@ -473,6 +474,19 @@ function Lobby() {
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-500"}`}>{live ? "● live" : "○ connecting"}</p>
+          {isHost && (
+            <div className="mt-4 flex flex-col items-center gap-2">
+              {/* White border is the quiet zone phone cameras need to read the code. */}
+              <QRCodeSVG
+                value={`${window.location.origin}/join/?code=${lobby.join_code}`}
+                size={176}
+                marginSize={2}
+                title="Scan to join this session"
+                className="rounded-lg"
+              />
+              <p className="text-xs text-zinc-400">Scan to join</p>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 bg-zinc-900 p-6 rounded-xl border border-zinc-800">
