@@ -39,6 +39,8 @@ type YouTubeApi = {
     element: HTMLDivElement,
     options: {
       videoId: string;
+      width?: string | number;
+      height?: string | number;
       playerVars?: Record<string, number | string>;
       events?: {
         onStateChange?: (event: { data: number }) => void;
@@ -129,6 +131,9 @@ function YouTubePlayer({
         const endedState = youtube.PlayerState?.ENDED ?? 0;
         player = new youtube.Player(container.current, {
           videoId: video.video_id,
+          // Without these YouTube uses its fixed default size instead of filling the box.
+          width: "100%",
+          height: "100%",
           playerVars: {
             autoplay: 1,
             enablejsapi: 1,
@@ -153,7 +158,7 @@ function YouTubePlayer({
   }, [video.video_id]);
 
   return (
-    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black">
+    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full">
       <div ref={container} className="absolute inset-0" />
       <noscript>JavaScript is required to play YouTube videos.</noscript>
     </div>
