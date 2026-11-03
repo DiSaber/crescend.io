@@ -494,7 +494,7 @@ function Lobby() {
       </div>
 
       <div className="w-full max-w-4xl flex flex-col gap-3">
-        <form onSubmit={addSong} className="flex gap-3 w-full">
+        <form onSubmit={addSong} className="flex flex-col sm:flex-row gap-3 w-full">
           <input
             value={link}
             onChange={(e) => editLink(e.target.value)}
@@ -504,7 +504,7 @@ function Lobby() {
           <button
             type="submit"
             disabled={!!adding || !linkUrl}
-            className="px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
+            className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
           >
             {adding && adding === linkUrl ? "Adding…" : "Add music"}
           </button>
@@ -533,8 +533,8 @@ function Lobby() {
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4 mb-3">
             <div className="min-w-0">
-              <p className="font-semibold truncate">Now playing: {current.video.title}</p>
-              <p className="text-xs text-zinc-400 truncate">
+              <p className="font-semibold line-clamp-2">Now playing: {current.video.title}</p>
+              <p className="text-xs text-zinc-400 line-clamp-2">
                 {current.video.author_name} · added by {contributor(current)}
               </p>
             </div>
@@ -590,8 +590,8 @@ function Lobby() {
                 <span className="w-6 text-center text-sm text-zinc-500">{index + 1}</span>
                 <img src={entry.video.thumbnail_url} alt="" className="h-12 w-20 rounded object-cover" />
                 <div className="min-w-0 flex-1 basis-32">
-                  <p className="truncate text-sm font-medium">{entry.video.title}</p>
-                  <p className="truncate text-xs text-zinc-400">
+                  <p className="line-clamp-2 text-sm font-medium">{entry.video.title}</p>
+                  <p className="line-clamp-2 text-xs text-zinc-400">
                     {entry.video.author_name} · added by {contributor(entry)}
                   </p>
                 </div>

@@ -85,7 +85,7 @@ export default function SongSearch({
               <div className="h-12 w-20 shrink-0 rounded bg-zinc-700" aria-hidden="true" />
             )}
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{song.title}</p>
+              <p className="line-clamp-2 text-sm font-medium">{song.title}</p>
               <p className="truncate text-xs text-zinc-400">{song.artist}</p>
             </div>
             <button
