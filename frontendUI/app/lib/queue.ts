@@ -1,6 +1,6 @@
 // Shared queue API client, following docs/queue-api.md.
-import { apiFetch } from "./auth";
-import type { VideoMetadata } from "./lobby";
+import { apiFetch } from "./auth.ts";
+import type { VideoMetadata } from "./lobby.ts";
 
 export type QueueEntry = {
   id: string;
@@ -32,12 +32,10 @@ export type AdvanceReason = "ended" | "skip" | "playback_error_skip";
 
 /** A non-2xx queue response, keeping the stable `code` for branching. */
 export class QueueError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string | undefined,
-    message: string,
-  ) {
-    super(message);
+  readonly status: number;
+  readonly code: string | undefined;
+  constructor(status: number, code: string | undefined, message: string) {
+    super(message); this.status = status; this.code = code;
   }
 }
 
@@ -63,7 +61,7 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-type Mutation = { changed: boolean; queue: QueueView };
+export type Mutation = { changed: boolean; queue: QueueView };
 
 /** 32 lowercase hex characters; keep one per submission attempt across retries. */
 export function newRequestId(): string {
@@ -76,8 +74,8 @@ export function newer(a: string, b: string | undefined): boolean {
   return b === undefined || BigInt(a) > BigInt(b);
 }
 
-export async function getQueue(membershipId: string): Promise<QueueView> {
-  return check(await apiFetch(base(membershipId)));
+export async function getQueue(membershipId: string, signal?: AbortSignal): Promise<QueueView> {
+  return check(await apiFetch(base(membershipId), { signal }));
 }
 
 export async function submitEntry(membershipId: string, url: string, requestId: string) {

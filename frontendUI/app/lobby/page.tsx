@@ -1,408 +1,70 @@
-﻿"use client";
+"use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
+import YouTubePlayer from "../components/YouTubePlayer";
 import SongSearch from "../components/SongSearch";
-import { currentUserId } from "../lib/auth";
-import {
-  getCurrent,
-  leaveLobby,
-  streamLobbyEvents,
-  type Lobby as LobbyState,
-  type VideoMetadata,
-} from "../lib/lobby";
-import {
-  advance,
-  getQueue,
-  moveEntry,
-  newer,
-  newRequestId,
-  QueueError,
-  setVotingPolicy,
-  submitEntry,
-  veto,
-  vote,
-  type AdvanceReason,
-  type QueueEntry,
-  type QueueView,
-} from "../lib/queue";
 import { youTubeVideoUrl } from "../lib/youtube";
-
-type YouTubePlayerInstance = {
-  destroy: () => void;
-};
-
-type YouTubeApi = {
-  Player: new (
-    element: HTMLDivElement,
-    options: {
-      videoId: string;
-      width?: string | number;
-      height?: string | number;
-      playerVars?: Record<string, number | string>;
-      events?: {
-        onStateChange?: (event: { data: number }) => void;
-        onError?: (event: { data: number }) => void;
-      };
-    },
-  ) => YouTubePlayerInstance;
-  PlayerState: { ENDED: number };
-};
-
-declare global {
-  interface Window {
-    YT?: YouTubeApi;
-    onYouTubeIframeAPIReady?: () => void;
-  }
-}
-
-let youtubeApiPromise: Promise<YouTubeApi> | undefined;
-
-function loadYouTubeApi(): Promise<YouTubeApi> {
-  if (youtubeApiPromise) return youtubeApiPromise;
-
-  youtubeApiPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector(
-      'script[src="https://www.youtube.com/iframe_api"]',
-    );
-    const previousReady = window.onYouTubeIframeAPIReady;
-
-    window.onYouTubeIframeAPIReady = () => {
-      previousReady?.();
-      if (window.YT) resolve(window.YT);
-      else reject(new Error("YouTube player API did not initialize."));
-    };
-
-    if (window.YT?.Player) {
-      resolve(window.YT);
-      return;
-    }
-
-    if (existing) return;
-
-    const script = document.createElement("script");
-    script.src = "https://www.youtube.com/iframe_api";
-    script.async = true;
-    script.onerror = () => reject(new Error("Could not load the YouTube player."));
-    document.head.appendChild(script);
-  });
-
-  return youtubeApiPromise;
-}
-
-/**
- * Host-only player. Remount it per queue entry (key = entry ID) so a repeated video
- * still gets its own ended/error callback, and each callback names the occurrence it saw.
- */
-function YouTubePlayer({
-  video,
-  onEnded,
-  onVideoError,
-  onLoadError,
-}: {
-  video: VideoMetadata;
-  onEnded: () => void;
-  onVideoError: () => void;
-  onLoadError: (message: string) => void;
-}) {
-  const container = useRef<HTMLDivElement>(null);
-  const reported = useRef(false);
-  // Keep the latest callbacks without recreating the player on every render.
-  const callbacks = useRef({ onEnded, onVideoError, onLoadError });
-  useEffect(() => {
-    callbacks.current = { onEnded, onVideoError, onLoadError };
-  });
-
-  useEffect(() => {
-    let player: YouTubePlayerInstance | undefined;
-    let cancelled = false;
-    reported.current = false;
-    const once = (fn: () => void) => {
-      if (cancelled || reported.current) return;
-      reported.current = true;
-      fn();
-    };
-
-    loadYouTubeApi()
-      .then((youtube) => {
-        if (cancelled || !container.current) return;
-        const endedState = youtube.PlayerState?.ENDED ?? 0;
-        player = new youtube.Player(container.current, {
-          videoId: video.video_id,
-          // Without these YouTube uses its fixed default size instead of filling the box.
-          width: "100%",
-          height: "100%",
-          playerVars: {
-            autoplay: 1,
-            enablejsapi: 1,
-            origin: window.location.origin,
-          },
-          events: {
-            onStateChange: (event) => {
-              if (event.data === endedState) once(() => callbacks.current.onEnded());
-            },
-            onError: () => once(() => callbacks.current.onVideoError()),
-          },
-        });
-      })
-      .catch(() => {
-        if (!cancelled) callbacks.current.onLoadError("Could not load the YouTube player.");
-      });
-
-    return () => {
-      cancelled = true;
-      player?.destroy();
-    };
-  }, [video.video_id]);
-
-  return (
-    <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full">
-      <div ref={container} className="absolute inset-0" />
-      <noscript>JavaScript is required to play YouTube videos.</noscript>
-    </div>
-  );
-}
-
-// Submission failures worth explaining to a guest who just pasted a link.
-const ADD_ERRORS: Record<string, string> = {
-  invalid_url: "That isn't a YouTube video link.",
-  metadata_unavailable: "Couldn't add that video. It may be private, removed, or not allowed to play outside YouTube.",
-  upstream_unavailable: "YouTube didn't respond. Try again in a moment.",
-};
-
-const ENDED_MESSAGES = {
-  left: "You left the session.",
-  closed: "The host closed the session.",
-  expired: "The session expired.",
-};
+import { QueueSession } from "../lib/queue-state";
+import { type AdvanceReason, type QueueEntry, type QueueView } from "../lib/queue";
 
 function Lobby() {
   const router = useRouter();
-  const [membershipId, setMembershipId] = useState<string | null>();
-  const [lobby, setLobby] = useState<LobbyState | null>(null);
-  const [queue, setQueue] = useState<QueueView | null>(null);
-  const [userId, setUserId] = useState<string>();
-  const [ended, setEnded] = useState<string>();
-  const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<string>();
-  const [live, setLive] = useState(false);
-  const [busy, setBusy] = useState<string>();
-
+  const [session] = useState(() => new QueueSession());
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const { membership, queue, userId, live, busy, ended, attempt } = state;
+  const lobby = membership?.lobby;
   const [link, setLink] = useState("");
-  // The URL being submitted, if any.
-  const [adding, setAdding] = useState<string>();
-  // One request ID per submission attempt: reused when retrying the same link after an
-  // uncertain failure, replaced once the link changes or the submission is settled.
-  const pendingSubmit = useRef<{ url: string; requestId: string } | undefined>(undefined);
-  // Whether the error on screen came from the last add, so editing the link clears it.
-  const addFailed = useRef(false);
-
-  // The membership generation and queue revision we last applied. Responses for any
-  // other generation (left/rejoined) or with a lower revision are stale and ignored.
-  const epoch = useRef<string | null | undefined>(undefined);
-  const queueRevision = useRef<string | undefined>(undefined);
-
-  useEffect(() => {
-    currentUserId().then(setUserId);
-  }, []);
-
-  const applyQueue = useCallback((view: QueueView) => {
-    if (view.membership_id !== epoch.current) return;
-    if (!newer(view.revision, queueRevision.current)) return;
-    queueRevision.current = view.revision;
-    setQueue(view);
-  }, []);
-
-  const applyMembership = useCallback((id: string | null, nextLobby: LobbyState | null) => {
-    if (id !== epoch.current) {
-      epoch.current = id;
-      queueRevision.current = undefined;
-      setQueue(null);
-    }
-    setMembershipId(id);
-    setLobby(nextLobby);
-  }, []);
-
-  // Serialized refetch of membership + queue: a hint while a read is in flight triggers
-  // one more read after it. A queue 403 means our generation is gone, so the next pass
-  // rereads membership to recover the current one.
-  const inFlight = useRef(false);
-  const dirty = useRef(false);
-  const sync = useCallback(async () => {
-    dirty.current = true;
-    if (inFlight.current) return;
-    inFlight.current = true;
-    let recoveries = 0;
-    try {
-      while (dirty.current) {
-        dirty.current = false;
-        const current = await getCurrent();
-        applyMembership(current.membership_id, current.lobby);
-        if (!current.membership_id) continue;
-        try {
-          applyQueue(await getQueue(current.membership_id));
-        } catch (e) {
-          if (e instanceof QueueError && e.status === 403 && recoveries++ < 2) {
-            dirty.current = true;
-          } else {
-            throw e;
-          }
-        }
-      }
-      setError(undefined);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      inFlight.current = false;
-    }
-  }, [applyMembership, applyQueue]);
-
-  useEffect(() => {
-    sync();
-  }, [sync]);
-
-  // Live updates for this membership generation, reconnecting with backoff.
-  useEffect(() => {
-    if (!membershipId) return;
-    const controller = new AbortController();
-    let delay = 250 + Math.random() * 250;
-    let stop = false;
-    (async () => {
-      while (!stop && !controller.signal.aborted) {
-        try {
-          await streamLobbyEvents(membershipId, controller.signal, (e) => {
-            setLive(true);
-            delay = 250;
-            // Both hints invalidate membership and queue; sync() rereads both.
-            if (e.event === "sync_required" || e.event === "lobby_changed") sync();
-            if (e.event === "membership_ended") {
-              stop = true;
-              setEnded(ENDED_MESSAGES[e.data.reason]);
-              if (epoch.current === membershipId) applyMembership(null, null);
-            }
-            // auth_expired: the stream closes; the next connect refreshes the token.
-          });
-        } catch {
-          if (controller.signal.aborted) return;
-          sync(); // a 403 means the generation changed; current state tells us the new one
-        }
-        setLive(false);
-        if (stop) return;
-        await new Promise((r) => setTimeout(r, delay));
-        delay = Math.min(delay * 2, 10_000) * (0.75 + Math.random() * 0.5);
-      }
-    })();
-    return () => controller.abort();
-  }, [membershipId, sync, applyMembership]);
-
-  /**
-   * Run one queue mutation against the current generation. Apply its snapshot when it
-   * is still for our generation; on conflicts, lost membership or uncertain outcomes,
-   * refetch instead of guessing.
-   */
-  const mutate = useCallback(
-    async (label: string, op: (membership: string) => Promise<{ queue: QueueView }>) => {
-      const membership = epoch.current;
-      if (!membership) return undefined;
-      setBusy(label);
-      try {
-        const result = await op(membership);
-        applyQueue(result.queue);
-        setError(undefined);
-        return result;
-      } catch (e) {
-        if (e instanceof QueueError) {
-          if (e.status === 409 || e.status === 403 || e.status === 404) sync();
-          if (e.code !== "current_entry_changed" && e.code !== "stale_queue_revision") setError(e.message);
-        } else {
-          setError((e as Error).message);
-          sync();
-        }
-        throw e;
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [applyQueue, sync],
-  );
+  useEffect(() => { session.start(); return () => session.stop(); }, [session]);
 
   async function leave() {
-    if (!membershipId) return;
-    try {
-      await leaveLobby(membershipId);
-      router.push("/");
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    if (await session.leave()) router.push("/");
   }
-
-  function editLink(text: string) {
-    setLink(text);
-    if (addFailed.current) {
-      addFailed.current = false;
-      setError(undefined);
-    }
-  }
-
   async function addSong(e: FormEvent) {
     e.preventDefault();
-    submitLink(link);
+    await submitLink(link);
   }
-
-  // Only supported video links reach the backend; other text searches the song catalog.
   async function submitLink(text: string) {
     const url = youTubeVideoUrl(text);
-    if (!url || adding) return;
-    if (pendingSubmit.current?.url !== url) pendingSubmit.current = { url, requestId: newRequestId() };
-    const { requestId } = pendingSubmit.current;
-    setAdding(url);
-    try {
-      await mutate("add", (m) => submitEntry(m, url, requestId));
-      pendingSubmit.current = undefined;
-      setLink("");
-    } catch (err) {
-      // Definite rejections settle the attempt; network/5xx keep the ID for a safe retry.
-      if (err instanceof QueueError && err.status < 500) pendingSubmit.current = undefined;
-      if (err instanceof QueueError && err.code && ADD_ERRORS[err.code]) setError(ADD_ERRORS[err.code]);
-      addFailed.current = true;
-    } finally {
-      setAdding(undefined);
-    }
+    if (!url || session.getSnapshot().attempt || session.getSnapshot().busy) return;
+    await session.add(url);
+    if (!session.getSnapshot().attempt && !session.getSnapshot().error) setLink("");
   }
-
-  // Host progression names the occurrence it saw end; a 409 means someone else already
-  // moved the queue, so mutate() refetches and the player follows the new current.
-  const advanceFrom = useCallback(
-    (entry: QueueEntry, reason: AdvanceReason) => {
-      mutate(`advance-${entry.id}`, (m) => advance(m, entry.id, reason)).catch(() => {});
-    },
-    [mutate],
-  );
-
-  const reportLoadError = useCallback((message: string) => setError(message), []);
-
   const linkUrl = youTubeVideoUrl(link);
   const current = queue?.current ?? null;
   const upcoming = queue?.upcoming ?? [];
-  const isHost = !!lobby && !!userId && lobby.owner_user_id === userId;
+  const isHost = session.isHost();
   const threshold = queue?.voting.effective_threshold ?? null;
+  const error = state.error ?? state.syncError;
+  const adding = busy === "Adding music…";
+  // Capture this render's membership epoch, never substitute a new generation in callbacks.
+  const epoch = session.capture();
+  const advanceFrom = (entry: QueueEntry, reason: AdvanceReason) => {
+    void session.advanceEntry(entry.id, reason, epoch).catch(() => {});
+  };
+  const disabled = !!busy || !!state.syncError;
 
-  if (membershipId === undefined) return <p className="text-zinc-400">Loading session…</p>;
-
-  if (!lobby) {
-    return (
-      <div className="w-full max-w-md bg-zinc-900 p-8 rounded-xl border border-zinc-800 text-center">
-        <p className="text-zinc-300 mb-6">{ended ?? "You're not in a session right now."}</p>
-        <div className="flex gap-4">
-          <a href="/create/" className="flex-1 p-3 rounded-lg bg-purple-600 hover:bg-purple-700 font-semibold">Create</a>
-          <a href="/join/" className="flex-1 p-3 rounded-lg bg-purple-600 hover:bg-purple-700 font-semibold">Join</a>
-        </div>
+  if (!membership) return (
+    <div className="text-center">
+      <p role="status">{state.loading ? "Loading session…" : "Could not load the session."}</p>
+      {error && <p role="alert" className="text-red-400">{error}</p>}
+      {!state.loading && <button onClick={() => void session.sync()} className="min-h-11 px-4 underline">Retry</button>}
+    </div>
+  );
+  if (!lobby) return (
+    <div className="w-full max-w-md bg-zinc-900 p-8 rounded-xl border border-zinc-800 text-center">
+      <p className="text-zinc-300 mb-6">{ended ?? "You're not in a session right now."}</p>
+      <div className="flex gap-4">
+        <a href="/create/" className="flex-1 p-3 rounded-lg bg-purple-600 font-semibold">Create</a>
+        <a href="/join/" className="flex-1 p-3 rounded-lg bg-purple-600 font-semibold">Join</a>
       </div>
-    );
-  }
+      <button onClick={() => void session.sync()} className="min-h-11 px-4 underline">Check session again</button>
+      {error && <p role="alert" className="text-red-400">{error}</p>}
+    </div>
+  );
 
   const contributor = (entry: QueueEntry) =>
     entry.submitted_by_user_id === userId
@@ -420,11 +82,11 @@ function Lobby() {
         <span className="px-2 text-xs text-zinc-400" title="Skip votes from guests">
           {voteLabel(entry)}
         </span>
-        {!isHost && (
+        {!isHost && !!userId && (
           <button
             type="button"
-            onClick={() => mutate(`vote-${entry.id}`, (m) => vote(m, entry.id)).catch(() => {})}
-            disabled={entry.has_voted || !!busy}
+            onClick={() => session.vote(entry.id).catch(() => {})}
+            disabled={entry.has_voted || disabled}
             className="min-h-11 rounded-lg px-3 text-sm text-zinc-200 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50"
           >
             {entry.has_voted ? "Voted" : "Vote skip"}
@@ -434,8 +96,8 @@ function Lobby() {
           <>
             <button
               type="button"
-              onClick={() => mutate(`move-${entry.id}`, (m) => moveEntry(m, entry.id, queue!.revision, index - 1)).catch(() => {})}
-              disabled={index === 0 || !!busy}
+              onClick={() => session.move(entry.id, queue!.revision, index - 1).catch(() => {})}
+              disabled={index === 0 || disabled}
               aria-label={`Move ${entry.video.title} up`}
               className="min-h-11 min-w-11 rounded-lg text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
             >
@@ -443,8 +105,8 @@ function Lobby() {
             </button>
             <button
               type="button"
-              onClick={() => mutate(`move-${entry.id}`, (m) => moveEntry(m, entry.id, queue!.revision, index + 1)).catch(() => {})}
-              disabled={index === upcoming.length - 1 || !!busy}
+              onClick={() => session.move(entry.id, queue!.revision, index + 1).catch(() => {})}
+              disabled={index === upcoming.length - 1 || disabled}
               aria-label={`Move ${entry.video.title} down`}
               className="min-h-11 min-w-11 rounded-lg text-sm text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-30"
             >
@@ -455,8 +117,8 @@ function Lobby() {
         {isHost && (
           <button
             type="button"
-            onClick={() => mutate(`veto-${entry.id}`, (m) => veto(m, entry.id)).catch(() => {})}
-            disabled={!!busy}
+            onClick={() => session.remove(entry.id).catch(() => {})}
+            disabled={disabled}
             aria-label={`Veto ${entry.video.title}`}
             className="min-h-11 rounded-lg px-3 text-sm text-red-300 hover:bg-red-950 disabled:opacity-50"
           >
@@ -501,52 +163,54 @@ function Lobby() {
           </ul>
           {isHost && queue && (
             <VotingPolicy
+              key={`${queue.voting.mode}-${queue.voting.fixed_count}`}
               voting={queue.voting}
-              disabled={!!busy}
-              onChange={(policy) => mutate("policy", (m) => setVotingPolicy(m, policy)).catch(() => {})}
+              disabled={disabled}
+              onChange={(policy) => session.policy(policy).catch(() => {})}
             />
           )}
-          <button onClick={leave} className="mt-4 text-sm text-zinc-400 hover:text-red-400 underline">
+          <button onClick={leave} disabled={!!busy} className="mt-4 text-sm text-zinc-400 hover:text-red-400 underline">
             Leave session (closes it for everyone if you&apos;re the host)
           </button>
         </div>
       </div>
 
       <div className="w-full max-w-4xl flex flex-col gap-3">
-        <form onSubmit={addSong} className="flex flex-col sm:flex-row gap-3 w-full">
-          <input
-            value={link}
-            onChange={(e) => editLink(e.target.value)}
-            placeholder="Song name or YouTube link"
-            className="flex-1 min-w-0 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
-          />
-          <button
-            type="submit"
-            disabled={!!adding || !linkUrl}
-            className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
-          >
-            {adding && adding === linkUrl ? "Adding…" : "Add music"}
-          </button>
-        </form>
-        {!linkUrl && (
-          <SongSearch
-            query={link}
-            addingUrl={adding}
-            onAdd={submitLink}
-            onPasteLink={(text) => {
-              editLink(text);
-              submitLink(text);
-            }}
-          />
-        )}
+      <form onSubmit={addSong} className="flex flex-col sm:flex-row gap-3 w-full">
+        <input
+          value={link}
+          onChange={(e) => setLink(e.target.value)}
+          aria-label="Song name or YouTube link"
+          disabled={!!attempt || !!busy}
+          placeholder="Song name or YouTube link"
+          className="min-w-0 flex-1 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+        />
+        <button
+          type="submit"
+          disabled={disabled || !!attempt || !queue || !linkUrl}
+          className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
+        >
+          {adding ? "Adding…" : "Add music"}
+        </button>
+      </form>
+      {!linkUrl && <SongSearch
+        query={link}
+        addingUrl={adding ? attempt?.url : undefined}
+        disabled={disabled || !!attempt || !queue}
+        onAdd={url => { void submitLink(url); }}
+        onPasteLink={text => { setLink(text); void submitLink(text); }}
+      />}
       </div>
-      {error && <p className="text-red-400">{error}</p>}
-      {notice && (
-        <p className="text-amber-300 text-sm">
-          {notice}{" "}
-          <button type="button" onClick={() => setNotice(undefined)} className="min-h-11 px-2 underline text-zinc-400">dismiss</button>
-        </p>
-      )}
+      {busy && <p role="status" className="text-zinc-400 text-sm">{busy}</p>}
+      {error && <div role="alert" className="text-center">
+        <p className="text-red-400">{error}</p>
+        {state.syncError && <button onClick={() => void session.sync()} className="min-h-11 px-3 underline">Reconnect</button>}
+      </div>}
+      {attempt && !busy && <div className="text-center text-sm text-zinc-300">
+        <p>The previous add may have completed. Retrying keeps the same submission ID.</p>
+        <button onClick={() => void session.retrySubmission()} disabled={!!state.syncError} className="min-h-11 px-3 underline disabled:opacity-50">Retry submission</button>
+        <button onClick={() => session.discardSubmission()} className="min-h-11 px-3 underline">Start a different submission</button>
+      </div>}
 
       {current ? (
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
@@ -561,7 +225,7 @@ function Lobby() {
               {isHost && (
                 <button
                   onClick={() => advanceFrom(current, "skip")}
-                  disabled={!!busy}
+                  disabled={disabled}
                   className="min-h-11 px-3 text-sm underline text-zinc-400 hover:text-white disabled:opacity-50"
                 >
                   Skip
@@ -573,13 +237,10 @@ function Lobby() {
           {isHost ? (
             <YouTubePlayer
               key={current.id}
-              video={current.video}
+              entry={current}
+              disabled={disabled}
               onEnded={() => advanceFrom(current, "ended")}
-              onVideoError={() => {
-                setNotice(`Skipped "${current.video.title}": YouTube could not play it here.`);
-                advanceFrom(current, "playback_error_skip");
-              }}
-              onLoadError={reportLoadError}
+              onSkipError={() => advanceFrom(current, "playback_error_skip")}
             />
           ) : (
             <div className="flex items-center gap-4">
@@ -639,40 +300,20 @@ function VotingPolicy({
   disabled: boolean;
   onChange: (policy: { mode: "majority" } | { mode: "fixed"; count: number }) => void;
 }) {
+  const [mode, setMode] = useState(voting.mode);
   const [count, setCount] = useState(String(voting.fixed_count ?? 2));
+  const valid = /^\d+$/.test(count) && Number(count) >= 1 && Number(count) <= 2147483647;
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
-      <span className="text-zinc-400">Vote skip needs</span>
-      <select
-        value={voting.mode}
-        disabled={disabled}
-        onChange={(e) =>
-          onChange(e.target.value === "fixed" ? { mode: "fixed", count: Math.max(1, Number(count) || 1) } : { mode: "majority" })
-        }
-        className="min-h-11 rounded bg-zinc-800 border border-zinc-700 px-2"
-      >
+    <form onSubmit={e => { e.preventDefault(); if (mode === "majority" || valid) onChange(mode === "majority" ? { mode } : { mode, count: Number(count) }); }} className="mt-4 flex flex-wrap items-center gap-2 text-sm text-zinc-300">
+      <label htmlFor="vote-mode">Vote skip needs</label>
+      <select id="vote-mode" value={mode} disabled={disabled} onChange={e => setMode(e.target.value as "majority" | "fixed")} className="min-h-11 rounded bg-zinc-800 border border-zinc-700 px-2">
         <option value="majority">a majority of guests</option>
         <option value="fixed">a fixed number of votes</option>
       </select>
-      {voting.mode === "fixed" && (
-        <input
-          type="number"
-          min={1}
-          value={count}
-          disabled={disabled}
-          onChange={(e) => setCount(e.target.value)}
-          onBlur={() => {
-            const n = Math.floor(Number(count));
-            if (n >= 1 && n !== voting.fixed_count) onChange({ mode: "fixed", count: n });
-          }}
-          className="min-h-11 w-16 rounded bg-zinc-800 border border-zinc-700 px-2"
-        />
-      )}
-      <span className="text-zinc-500">
-        ({voting.active_guest_count} guest{voting.active_guest_count === 1 ? "" : "s"}
-        {voting.effective_threshold !== null && `, ${voting.effective_threshold} needed`})
-      </span>
-    </div>
+      {mode === "fixed" && <input aria-label="Required skip votes" type="number" min={1} max={2147483647} step={1} value={count} disabled={disabled} onChange={e => setCount(e.target.value)} className="min-h-11 w-24 rounded bg-zinc-800 border border-zinc-700 px-2" />}
+      <button type="submit" disabled={disabled || (mode === "fixed" && !valid)} className="min-h-11 px-3 underline disabled:opacity-50">Apply policy</button>
+      <span className="text-zinc-500">{voting.active_guest_count} guests; {voting.effective_threshold === null ? "no removals without guests" : `${voting.effective_threshold} votes needed`}</span>
+    </form>
   );
 }
 

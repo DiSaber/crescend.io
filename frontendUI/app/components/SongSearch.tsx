@@ -19,12 +19,15 @@ type Found = { q: string; results: SongResult[] } | { q: string; error: true };
 export default function SongSearch({
   query,
   addingUrl,
+  disabled = false,
   onAdd,
   onPasteLink,
 }: {
   query: string;
   /** The URL being submitted right now, if any; disables every Add button meanwhile. */
   addingUrl?: string;
+  /** Queue recovery or another mutation may temporarily block all additions. */
+  disabled?: boolean;
   onAdd: (url: string) => void;
   onPasteLink?: (text: string) => void;
 }) {
@@ -91,7 +94,7 @@ export default function SongSearch({
             <button
               type="button"
               onClick={() => onAdd(song.watch_url)}
-              disabled={!!addingUrl}
+              disabled={disabled || !!addingUrl}
               aria-label={`Add ${song.title}`}
               className="min-h-11 min-w-11 shrink-0 px-4 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-semibold"
             >
