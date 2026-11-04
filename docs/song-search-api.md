@@ -21,6 +21,8 @@ Titles and attribution are decoded plain text; render them as text. Missing thum
 
 Discovery runs only below five catalog matches or with `more=true`. Valid saved results take precedence over missing credentials and exhausted allowance. Equivalent case/accent/whitespace queries share an in-flight attempt and seven-day saved results. `more=true` does not bypass cache or request another page. Successful persistence is required for durable reuse; failed writes or corrupted cache data can permit a later guarded attempt. Cache storage outages suppress external calls. Fresh validated results survive write failure/timeouts, and initial catalog results remain available during external failures.
 
+Fresh YouTube results are checked with `videos.list` before they are returned or saved. A result is kept only if YouTube's own topic classification marks it as music (`Music`, `*_music` or `Music_of_*`) and it runs 1 to 15 minutes; the uploader-chosen Music category isn't reliable on its own. If the check fails, the status is `temporarily_unavailable` and nothing external is returned or saved. Each fresh attempt costs 101 YouTube quota units (100 for search, 1 for the check), so the default cap of 90 attempts stays under the free 10,000 daily units. Pasted links aren't filtered; they use the queue API's oEmbed validation.
+
 To enqueue a result, use its `watch_url` with the existing [queue API](queue-api.md):
 
 ```http

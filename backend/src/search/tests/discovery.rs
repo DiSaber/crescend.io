@@ -27,7 +27,7 @@ async fn fresh_cache_restart_filters_decoding_and_empty_success() {
         .and(query_param("type", "video"))
         .and(query_param("videoEmbeddable", "true"))
         .and(query_param("videoCategoryId", "10"))
-        .and(query_param("maxResults", "10"))
+        .and(query_param("maxResults", "25"))
         .and(query_param("order", "relevance"))
         .and(query_param("q", "cafe"))
         .and(header("x-goog-api-key", "private-test-key"))
@@ -457,4 +457,179 @@ async fn overlapping_errors_share_terminal_outcome_without_serial_retries() {
     }
     assert_eq!(f.upstream.received_requests().await.unwrap().len(), 1);
     assert!(state.search.flights.lock().unwrap().is_empty());
+}
+
+fn candidate(id: &str, title: &str) -> serde_json::Value {
+    serde_json::json!({"id":{"kind":"youtube#video","videoId":id},"snippet":{"title":title,"channelTitle":"Channel"}})
+}
+fn details(id: &str, duration: &str, topic: &str) -> serde_json::Value {
+    serde_json::json!({"id":id,"contentDetails":{"duration":duration},
+        "topicDetails":{"topicCategories":[format!("https://en.wikipedia.org/wiki/{topic}")]}})
+}
+async fn filtered(f: &Fixture) -> AppState {
+    let mut state = f.state();
+    state.search = super::super::SearchService::new(
+        super::super::config::SearchConfig {
+            api_key: Some("private-test-key".into()),
+            daily_limit: 90,
+        },
+        f.auth.clock.clone(),
+        crate::youtube::search::SearchClient::for_filter_test(f.upstream.uri().parse().unwrap()),
+    );
+    state
+}
+
+#[tokio::test]
+async fn discovery_keeps_only_music_of_a_queueable_length() {
+    let f = Fixture::new().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+                candidate("aaaaaa", "Real song"),
+                candidate("bbbbbb", "Cat compilation"),
+                candidate("cccccc", "Ten hour loop"),
+                candidate("dddddd", "Music short"),
+                candidate("eeeeee", "Deleted before lookup"),
+                candidate("ffffff", "Genre-only topic"),
+            ]})),
+        )
+        .expect(1)
+        .mount(&f.upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/videos"))
+        .and(query_param("part", "contentDetails,topicDetails"))
+        .and(query_param(
+            "id",
+            "aaaaaa,bbbbbb,cccccc,dddddd,eeeeee,ffffff",
+        ))
+        .and(header("x-goog-api-key", "private-test-key"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+                // Lookup order differs from search order, which must be preserved.
+                details("ffffff", "PT3M", "Hip_hop_music"),
+                details("aaaaaa", "PT4M13S", "Music"),
+                details("bbbbbb", "PT2M43S", "Pet"),
+                details("cccccc", "PT10H", "Music"),
+                details("dddddd", "PT45S", "Music"),
+            ]})),
+        )
+        .expect(1)
+        .mount(&f.upstream)
+        .await;
+    let state = filtered(&f).await;
+    let found = state
+        .search
+        .search(&f.database, "anything", true, NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.discovery.status,
+        crate::models::search::DiscoveryStatus::Fresh
+    );
+    let ids: Vec<_> = found
+        .results
+        .iter()
+        .map(|r| r.song.video_id.as_str())
+        .collect();
+    assert_eq!(ids, ["aaaaaa", "ffffff"]);
+    // Rejected videos never reach the shared catalog.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let saved: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM catalog_songs WHERE video_id IN ('bbbbbb','cccccc','dddddd','eeeeee')")
+        .fetch_one(&f.database.db_pool)
+        .await
+        .unwrap();
+    assert_eq!(saved, 0);
+}
+
+#[tokio::test]
+async fn failed_music_lookup_returns_and_saves_nothing_external() {
+    let f = Fixture::new().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"items":[candidate("aaaaaa", "Unchecked song")]}),
+            ),
+        )
+        .mount(&f.upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/videos"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&f.upstream)
+        .await;
+    let state = filtered(&f).await;
+    let found = state
+        .search
+        .search(&f.database, "unchecked", true, NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.discovery.status,
+        crate::models::search::DiscoveryStatus::TemporarilyUnavailable
+    );
+    assert!(found.results.is_empty());
+    let saved: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM catalog_songs WHERE video_id = 'aaaaaa'")
+            .fetch_one(&f.database.db_pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, 0);
+}
+
+#[tokio::test]
+async fn empty_search_skips_the_music_lookup_and_results_stop_at_ten() {
+    let f = Fixture::new().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .and(query_param("q", "nothing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[]})))
+        .mount(&f.upstream)
+        .await;
+    let ids: Vec<String> = (0..25).map(|n| format!("vid{n:03}")).collect();
+    let page: Vec<_> = ids.iter().map(|id| candidate(id, "Song")).collect();
+    let info: Vec<_> = ids
+        .iter()
+        .map(|id| details(id, "PT3M", "Pop_music"))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .and(query_param("q", "many"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":page})))
+        .mount(&f.upstream)
+        .await;
+    // One lookup in total: the "many" search only.
+    Mock::given(method("GET"))
+        .and(path("/videos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":info})))
+        .expect(1)
+        .mount(&f.upstream)
+        .await;
+    let state = filtered(&f).await;
+    let empty = state
+        .search
+        .search(&f.database, "nothing", true, NOW)
+        .await
+        .unwrap();
+    assert!(empty.results.is_empty());
+    let many = state
+        .search
+        .search(&f.database, "many", true, NOW)
+        .await
+        .unwrap();
+    assert_eq!(many.results.len(), 10);
+}
+
+#[test]
+fn iso_durations_parse_or_reject() {
+    use crate::youtube::search::iso_seconds;
+    assert_eq!(iso_seconds("PT4M13S"), Some(253));
+    assert_eq!(iso_seconds("PT1H"), Some(3600));
+    assert_eq!(iso_seconds("P1DT2H"), Some(93600));
+    assert_eq!(iso_seconds("P0D"), Some(0));
+    for bad in ["", "P", "4M13S", "PT4X", "PT4", "PT1H2", "P1H", "PT1D"] {
+        assert_eq!(iso_seconds(bad), None, "{bad}");
+    }
 }
