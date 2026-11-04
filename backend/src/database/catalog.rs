@@ -108,27 +108,41 @@ CREATE TRIGGER IF NOT EXISTS catalog_metadata_au AFTER UPDATE ON catalog_metadat
         }
         tx.commit().await
     }
+    #[cfg(test)]
     pub async fn search_catalog(
         &self,
         query: &str,
         now: i64,
     ) -> Result<Vec<Snapshot>, sqlx::Error> {
+        let mut rows = self.search_catalog_candidates(query, now).await?;
+        rows.truncate(10);
+        Ok(rows.into_iter().map(|(song, _)| song).collect())
+    }
+    /// Text matches in relevance order, each with whether its metadata is curated starter
+    /// text. Returns more than a response shows, so ranking can promote beyond the top ten.
+    pub async fn search_catalog_candidates(
+        &self,
+        query: &str,
+        now: i64,
+    ) -> Result<Vec<(Snapshot, bool)>, sqlx::Error> {
         let Some(terms) = terms(&normalize(query)) else {
             return Ok(vec![]);
         };
-        let rows = sqlx::query("SELECT s.video_id,m.title,m.artist,m.thumbnail_url FROM catalog_metadata_fts JOIN catalog_metadata m ON m.id=catalog_metadata_fts.rowid JOIN catalog_songs s ON s.id=m.song_id WHERE catalog_metadata_fts MATCH ? AND (m.expires_at IS NULL OR m.expires_at>?) AND (m.source='youtube' OR NOT EXISTS(SELECT 1 FROM catalog_metadata p WHERE p.song_id=s.id AND p.source='youtube' AND p.expires_at>?)) ORDER BY bm25(catalog_metadata_fts),s.submission_count DESC,s.video_id LIMIT 10")
+        let rows = sqlx::query("SELECT s.video_id,m.title,m.artist,m.thumbnail_url,m.source FROM catalog_metadata_fts JOIN catalog_metadata m ON m.id=catalog_metadata_fts.rowid JOIN catalog_songs s ON s.id=m.song_id WHERE catalog_metadata_fts MATCH ? AND (m.expires_at IS NULL OR m.expires_at>?) AND (m.source='youtube' OR NOT EXISTS(SELECT 1 FROM catalog_metadata p WHERE p.song_id=s.id AND p.source='youtube' AND p.expires_at>?)) ORDER BY bm25(catalog_metadata_fts),s.submission_count DESC,s.video_id LIMIT 50")
             .bind(terms).bind(now).bind(now).fetch_all(&self.db_pool).await?;
         Ok(rows
             .into_iter()
             .map(|r| {
                 let id: String = r.get("video_id");
-                Snapshot {
+                let source: String = r.get("source");
+                let song = Snapshot {
                     watch_url: format!("https://www.youtube.com/watch?v={id}"),
                     video_id: id,
                     title: r.get("title"),
                     artist: r.get("artist"),
                     thumbnail_url: r.get("thumbnail_url"),
-                }
+                };
+                (song, source == "starter")
             })
             .collect())
     }

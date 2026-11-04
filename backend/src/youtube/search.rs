@@ -152,6 +152,8 @@ impl SearchClient {
             let music = self.music_ids(&ids, key).await?;
             songs.retain(|song| music.contains(&song.video_id));
         }
+        // Rank before cutting, or an official video deep in the page would never be seen.
+        songs.sort_by_key(|song| crate::search::rank::tier(song, false, query));
         songs.truncate(MAX_RESULTS);
         Ok(songs)
     }

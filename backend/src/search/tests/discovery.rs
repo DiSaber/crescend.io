@@ -622,6 +622,39 @@ async fn empty_search_skips_the_music_lookup_and_results_stop_at_ten() {
     assert_eq!(many.results.len(), 10);
 }
 
+#[tokio::test]
+async fn official_result_past_the_tenth_candidate_is_kept() {
+    let f = Fixture::new().await;
+    let ids: Vec<String> = (0..25).map(|n| format!("vid{n:03}")).collect();
+    let mut page: Vec<_> = ids[..24]
+        .iter()
+        .map(|id| candidate(id, "Fan upload"))
+        .collect();
+    page.push(
+        serde_json::json!({"id":{"kind":"youtube#video","videoId":"vid024"},
+        "snippet":{"title":"Song (Official Video)","channelTitle":"ArtistVEVO"}}),
+    );
+    let info: Vec<_> = ids.iter().map(|id| details(id, "PT3M", "Music")).collect();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":page})))
+        .mount(&f.upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/videos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":info})))
+        .mount(&f.upstream)
+        .await;
+    let state = filtered(&f).await;
+    let found = state
+        .search
+        .search(&f.database, "song", true, NOW)
+        .await
+        .unwrap();
+    assert_eq!(found.results.len(), 10);
+    assert_eq!(found.results[0].song.video_id, "vid024");
+}
+
 #[test]
 fn iso_durations_parse_or_reject() {
     use crate::youtube::search::iso_seconds;
@@ -632,4 +665,66 @@ fn iso_durations_parse_or_reject() {
     for bad in ["", "P", "4M13S", "PT4X", "PT4", "PT1H2", "P1H", "PT1D"] {
         assert_eq!(iso_seconds(bad), None, "{bad}");
     }
+}
+
+#[tokio::test]
+async fn official_youtube_results_rank_above_weaker_catalog_matches() {
+    let f = Fixture::new().await;
+    f.database
+        .record_submission(
+            "11111111111111111111111111111111",
+            &song("bbbbbb", "Teen Spirit (Piano Cover)", "Someone"),
+            NOW,
+        )
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+            candidate("cccccc", "Teen Spirit (Lyrics)"),
+            {"id":{"kind":"youtube#video","videoId":"dddddd"},
+             "snippet":{"title":"Teen Spirit (Official Music Video)","channelTitle":"NirvanaVEVO"}},
+        ]})))
+        .mount(&f.upstream)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/videos"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+                details("cccccc", "PT5M", "Music"),
+                details("dddddd", "PT5M", "Rock_music"),
+            ]})),
+        )
+        .mount(&f.upstream)
+        .await;
+    let state = filtered(&f).await;
+    let found = state
+        .search
+        .search(&f.database, "teen spirit", true, NOW)
+        .await
+        .unwrap();
+    let ids: Vec<_> = found
+        .results
+        .iter()
+        .map(|r| r.song.video_id.as_str())
+        .collect();
+    assert_eq!(ids, ["dddddd", "cccccc", "bbbbbb"]);
+    // The same order comes back from the saved search, with no further provider request.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let requests = f.upstream.received_requests().await.unwrap().len();
+    let again = state
+        .search
+        .search(&f.database, "teen spirit", true, NOW)
+        .await
+        .unwrap();
+    let ids: Vec<_> = again
+        .results
+        .iter()
+        .map(|r| r.song.video_id.as_str())
+        .collect();
+    assert_eq!(ids[0], "dddddd");
+    assert_eq!(
+        f.upstream.received_requests().await.unwrap().len(),
+        requests
+    );
 }

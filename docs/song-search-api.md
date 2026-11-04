@@ -8,7 +8,7 @@ Supply `q` exactly once: 1–200 Unicode scalar values after trimming. Compariso
 {"results":[{"video_id":"dQw4w9WgXcQ","title":"Never Gonna Give You Up","artist":"Rick Astley","thumbnail_url":null,"watch_url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","source":"catalog"}],"discovery":{"status":"missing_credentials"}}
 ```
 
-Titles and attribution are decoded plain text; render them as text. Missing thumbnails are null. Results contain up to ten catalog matches, ranked by relevance, accepted submission count and video ID, followed by up to ten distinct external results in provider order. Source is `catalog`, `youtube` or `youtube_cache`. Counts, account identities, membership data and search histories are not returned.
+Titles and attribution are decoded plain text; render them as text. Missing thumbnails are null. Results contain up to ten catalog matches, ranked by relevance, accepted submission count and video ID, plus up to ten distinct external results in provider order. Source is `catalog`, `youtube` or `youtube_cache`. Counts, account identities, membership data and search histories are not returned.
 
 | Discovery status | Meaning |
 | --- | --- |
@@ -20,6 +20,8 @@ Titles and attribution are decoded plain text; render them as text. Missing thum
 | `temporarily_unavailable` | Provider, cache or allowance access failed before usable discovery results were obtained |
 
 Discovery runs only below five catalog matches or with `more=true`. Valid saved results take precedence over missing credentials and exhausted allowance. Equivalent case/accent/whitespace queries share an in-flight attempt and seven-day saved results. `more=true` does not bypass cache or request another page. Successful persistence is required for durable reuse; failed writes or corrupted cache data can permit a later guarded attempt. Cache storage outages suppress external calls. Fresh validated results survive write failure/timeouts, and initial catalog results remain available during external failures.
+
+The combined list is then ordered so the likely version comes first, keeping the order above within each group: official channels (`*VEVO`, `* - Topic`, a channel name containing "official") and curated starter songs; those channels' lyric and live uploads, an artist's own uploads, and titles containing "official"; other results; lyric uploads; then covers, remixes, karaoke and similar versions, unless the search asked for that word. A lyric, live or derivative word in the search removes its penalty where it applies. This uses stored text only and costs no quota. Fresh candidates are ranked this way before being cut to ten.
 
 Fresh YouTube results are checked with `videos.list` before they are returned or saved. A result is kept only if YouTube's own topic classification marks it as music (`Music`, `*_music` or `Music_of_*`) and it runs 1 to 15 minutes; the uploader-chosen Music category isn't reliable on its own. If the check fails, the status is `temporarily_unavailable` and nothing external is returned or saved. Each fresh attempt costs 101 YouTube quota units (100 for search, 1 for the check), so the default cap of 90 attempts stays under the free 10,000 daily units. Pasted links aren't filtered; they use the queue API's oEmbed validation.
 
