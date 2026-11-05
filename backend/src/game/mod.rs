@@ -1,4 +1,5 @@
 //! Game engine orchestration, domain errors and the phase ticker.
+pub mod answer;
 pub mod modes;
 pub mod rules;
 
@@ -31,6 +32,10 @@ pub enum GameError {
     PhaseChanged,
     SongChanged,
     SubmissionLimit,
+    DuplicateSong,
+    HostCannotGuess,
+    OwnSong,
+    GuessLimit,
     SubmissionUnavailable,
     SelfVote,
     VoteLimit,

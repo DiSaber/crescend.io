@@ -66,8 +66,8 @@ async fn party_round_collects_votes_scores_and_overlaps_the_next_round() {
     assert_eq!((game.round, game.phase), (2, Phase::Collect));
     assert!(game.ballot.is_none());
     let playing = game.now_playing.unwrap();
-    assert_eq!(playing.song.video_id, "guestaaa01");
-    assert_eq!(playing.submitted_by_user_id, a.id.to_string());
+    assert_eq!(playing.song.as_ref().unwrap().video_id, "guestaaa01");
+    assert_eq!(playing.submitted_by_user_id, Some(a.id.to_string()));
     assert_eq!(playing.ends_at, None, "Party plays full songs");
     let result = game.last_result.unwrap();
     assert_eq!(result.round, 1);
@@ -113,7 +113,13 @@ async fn ticker_advances_phases_on_the_injected_clock() {
     let game = f.view(a, am).await;
     assert_eq!((game.round, game.phase), (2, Phase::Collect));
     assert_eq!(
-        game.now_playing.as_ref().unwrap().song.video_id,
+        game.now_playing
+            .as_ref()
+            .unwrap()
+            .song
+            .as_ref()
+            .unwrap()
+            .video_id,
         "guestaaa01"
     );
     assert_eq!(
@@ -339,7 +345,10 @@ async fn a_late_submission_lands_in_the_round_that_is_open_after_catch_up() {
     let game = late.game.game.unwrap();
     assert_eq!((game.round, game.phase), (2, Phase::Collect));
     assert_eq!(game.my_submissions[0].id, late.submission_id);
-    assert_eq!(game.now_playing.unwrap().song.video_id, "guestaaa01");
+    assert_eq!(
+        game.now_playing.unwrap().song.as_ref().unwrap().video_id,
+        "guestaaa01"
+    );
 }
 
 #[tokio::test]
@@ -446,7 +455,10 @@ async fn host_skipping_a_held_play_phase_ends_the_song_that_holds_it() {
     assert_eq!((game.round, game.phase), (3, Phase::Collect));
     let playing = game.now_playing.unwrap();
     assert_eq!(
-        (playing.round, playing.song.video_id.as_str()),
+        (
+            playing.round,
+            playing.song.as_ref().unwrap().video_id.as_str()
+        ),
         (2, "guestaaa02")
     );
     assert_eq!(playing.started_at.timestamp(), f.now());
