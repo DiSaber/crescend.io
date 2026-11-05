@@ -23,6 +23,8 @@ pub enum GameError {
     TooLarge,
     MediaType,
     ModeUnavailable,
+    InvalidRules,
+    InvalidSettings,
     GameRunning,
     NotRunning,
     PhaseClosed,
@@ -57,6 +59,40 @@ impl From<QueueError> for GameError {
             _ => Self::Unavailable,
         }
     }
+}
+
+/// Resolves a start request to the mode ID it records and the definition it runs.
+pub(crate) fn resolve(
+    request: &crate::models::game::StartGameRequest,
+) -> Result<(String, modes::Definition), GameError> {
+    let (mode_id, base) = match (&request.mode_id, &request.custom) {
+        (Some(id), None) => (
+            id.clone(),
+            (modes::preset(id)
+                .ok_or(GameError::ModeUnavailable)?
+                .definition)(),
+        ),
+        (None, Some(custom)) => {
+            let name = custom.name.trim();
+            if !(1..=40).contains(&name.chars().count()) {
+                return Err(GameError::InvalidRequest);
+            }
+            (
+                "custom".to_owned(),
+                modes::Definition {
+                    name: name.to_owned(),
+                    rules: custom.rules,
+                    settings: modes::default_settings(&custom.rules),
+                },
+            )
+        }
+        _ => return Err(GameError::InvalidRequest),
+    };
+    let definition = modes::customize(base, &request.settings).map_err(|error| match error {
+        modes::ModeError::Rules(_) => GameError::InvalidRules,
+        modes::ModeError::Setting(_) => GameError::InvalidSettings,
+    })?;
+    Ok((mode_id, definition))
 }
 
 pub(crate) fn random_id() -> Result<String, GameError> {

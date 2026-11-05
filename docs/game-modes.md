@@ -117,6 +117,21 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   variant returns a trait object (`Ballot::groups`, `Winner::winners`,
   `Scoring::round_points`). Points: `VotesToPicker` is 10 per vote received.
 
+- **Settings schema (G2).** `GET /api/game-modes` serves each mode's settings as
+  `{key,label,type,default,min,max,step,unit}` with `type` `integer` or `boolean`.
+  The engine keeps one fixed settings struct; a rule set only decides which keys are
+  exposed (pair ballots hide `votes_per_player`). The start request sends overrides
+  as `{key: value}`; the server applies the same schema (exposed key, exact type,
+  range, step) and rejects anything else with `invalid_game_settings`.
+- **Rule validation (G2).** `Rules::validate` names the first conflict. Today:
+  `all` ballots need `most_votes`, `pairs` ballots need `pair_winners`. Later
+  milestones add their own pairings. Hosts can also start an unsaved `custom` mode
+  (name plus rules) on Party's default settings.
+- **Duel (G2).** Pairs form in submission order with a bye for an odd song; a player
+  sits out the pair holding their own song. Every pair winner plays. `WinnerBonus` is
+  50 points per contested pair won; byes play but score nothing, so a bye is never
+  better than a win.
+
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 
 All under the existing bearer auth; game routes require an active membership of the lobby; host-only routes return `403 host_required`.
@@ -126,7 +141,7 @@ All under the existing bearer auth; game routes require an active membership of 
 | `GET /api/game-modes` | any | Presets and the caller's saved modes, each with its settings schema |
 | `POST /api/game-modes` | any | Save a custom mode; validates rules and settings |
 | `DELETE /api/game-modes/{id}` | owner | Delete a saved mode |
-| `POST /api/lobbies/memberships/{m}/game` | host | Start a game: `{mode_id or definition, settings, prompts}` |
+| `POST /api/lobbies/memberships/{m}/game` | host | Start a game: `{mode_id or custom: {name, rules}, settings, prompts}` |
 | `GET /api/lobbies/memberships/{m}/game` | member | Game snapshot: mode, round, phase, `phase_ends_at`, prompt, the caller's own submission, the ballot (only during vote), results, scoreboard, revision |
 | `DELETE /api/lobbies/memberships/{m}/game` | host | End the game (scoreboard kept until the next start); on an ended game, dismiss it |
 | `POST .../game/advance` | host | `{phase_seq}` skips that phase; `{play_seq}` reports the playing song ended |
