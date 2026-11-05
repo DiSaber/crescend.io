@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Jukebox from "../components/jukebox.jsx";
+import PartyTimer from "../components/PartyTimer";
 import SignInGate from "../components/SignInGate";
 import YouTubeSearchFallback from "../components/YouTubeSearchFallback";
 import { currentUserId } from "../lib/auth";
@@ -173,7 +174,7 @@ const ENDED_MESSAGES = {
   expired: "The session expired.",
 };
 
-function Lobby() {
+function Lobby({ partyMode = false }: { partyMode?: boolean }) {
   const router = useRouter();
   const [membershipId, setMembershipId] = useState<string | null>();
   const [lobby, setLobby] = useState<LobbyState | null>(null);
@@ -467,6 +468,7 @@ function Lobby() {
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-500"}`}>{live ? "● live" : "○ connecting"}</p>
+          {partyMode && <PartyTimer />}
         </div>
 
         <div className="flex-1 bg-zinc-900 p-6 rounded-xl border border-zinc-800">
@@ -654,11 +656,11 @@ function VotingPolicy({
   );
 }
 
-export default function LobbyPage() {
+export default function LobbyPage({ partyMode = false }: { partyMode?: boolean }) {
   return (
     <div className="relative w-full min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-6">
-      <SignInGate returnTo="/lobby/">
-        <Lobby />
+      <SignInGate returnTo={partyMode ? "/party/" : "/lobby/"}>
+        <Lobby partyMode={partyMode} />
       </SignInGate>
     </div>
   );
