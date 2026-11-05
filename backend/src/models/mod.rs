@@ -1,3 +1,4 @@
+pub mod game;
 pub mod lobby;
 pub mod queue;
 pub mod search;

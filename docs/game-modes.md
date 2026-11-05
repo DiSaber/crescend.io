@@ -92,6 +92,31 @@ Song length is a mode decision: presets set `play_seconds`, and hosts can change
 - Images are served only to members of that lobby and deleted when the lobby closes or expires. Limit 30 images per lobby.
 - The host sees each image in the prompt editor before starting; nothing is shown to players before the round uses it.
 
+## Design decisions (backend)
+
+Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint reference.
+
+- **Jukebox coexistence (G1).** A game is one row per lobby next to the queue, not a
+  change to it. While a game runs the host player plays the game's `now_playing` and
+  does not advance the queue, so the queue's current entry and order are kept, and it
+  stays writable for later songs. Ending or dismissing the game hands playback back.
+  The backend never locks the queue; "paused" is the player's choice of source.
+- **One revision (G1).** Game commits increment the existing lobby revision, so the
+  membership event stream needs no new event type and every hint means "refetch the
+  membership, queue and game".
+- **Ticker (G1).** A one-second loop (`game::start_ticker`) applies due transitions
+  using the auth clock; tests inject the clock and call `tick_games` directly. Every
+  write also catches its game up first in the same `BEGIN IMMEDIATE` transaction, so
+  correctness never depends on the ticker's timing.
+- **Play list (G1).** Decided songs go to a per-game play list; `now_playing` is its
+  head. Overlap means the next round collects while an earlier round's songs play,
+  but never more than one round ahead, so the list cannot grow without bound.
+- **Everyone plays (G1).** The host picks and votes like guests in pick modes.
+  Phases close early once every active member has done everything they can.
+- **Rules (G1).** Each rule is a serde enum stored in the mode definition; each
+  variant returns a trait object (`Ballot::groups`, `Winner::winners`,
+  `Scoring::round_points`). Points: `VotesToPicker` is 10 per vote received.
+
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 
 All under the existing bearer auth; game routes require an active membership of the lobby; host-only routes return `403 host_required`.
@@ -103,10 +128,10 @@ All under the existing bearer auth; game routes require an active membership of 
 | `DELETE /api/game-modes/{id}` | owner | Delete a saved mode |
 | `POST /api/lobbies/memberships/{m}/game` | host | Start a game: `{mode_id or definition, settings, prompts}` |
 | `GET /api/lobbies/memberships/{m}/game` | member | Game snapshot: mode, round, phase, `phase_ends_at`, prompt, the caller's own submission, the ballot (only during vote), results, scoreboard, revision |
-| `DELETE /api/lobbies/memberships/{m}/game` | host | End the game (scoreboard kept until the next start) |
-| `POST .../game/advance` | host | Skip to the next phase |
+| `DELETE /api/lobbies/memberships/{m}/game` | host | End the game (scoreboard kept until the next start); on an ended game, dismiss it |
+| `POST .../game/advance` | host | `{phase_seq}` skips that phase; `{play_seq}` reports the playing song ended |
 | `POST .../game/submissions` | player | Pick or propose a song: `{url, request_id}` (same validation as the queue) |
-| `POST .../game/votes` | player | Vote for a submission |
+| `POST .../game/votes` | player | Vote for a submission: `{submission_id}` |
 | `POST .../game/guesses` | player | Guess a title: `{text}` → `{correct, points}` |
 | `POST .../game/images` | host | Upload an image (multipart) → `{image_id}` |
 | `GET .../game/images/{id}` | member | Fetch an image |

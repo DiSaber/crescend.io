@@ -89,6 +89,10 @@ impl Database {
                 .bind(lobby_id.as_str())
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("DELETE FROM games WHERE lobby_id = ?")
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
             sqlx::query("DELETE FROM lobby_queue_policies WHERE lobby_id = ?")
                 .bind(lobby_id.as_str())
                 .execute(&mut *tx)
