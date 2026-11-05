@@ -1,5 +1,6 @@
 pub mod config;
 pub mod normalize;
+pub mod rank;
 use crate::{auth::Clock, database::Database, models::search::*, youtube::search::SearchClient};
 use std::{
     collections::{HashMap, HashSet},
@@ -78,10 +79,20 @@ impl SearchService {
         now: i64,
     ) -> Result<SearchResponse, ()> {
         let query = normalize::normalize(query);
-        let songs = timeout(Duration::from_secs(1), db.search_catalog(&query, now))
-            .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?;
+        let mut candidates = timeout(
+            Duration::from_secs(1),
+            db.search_catalog_candidates(&query, now),
+        )
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())?;
+        candidates.sort_by_key(|(song, curated)| rank::tier(song, *curated, &query));
+        candidates.truncate(10);
+        let tiers: std::collections::HashMap<String, u8> = candidates
+            .iter()
+            .map(|(song, curated)| (song.video_id.clone(), rank::tier(song, *curated, &query)))
+            .collect();
+        let songs: Vec<_> = candidates.into_iter().map(|(song, _)| song).collect();
         let outcome = if songs.len() >= 5 && !more {
             FlightOutcome::status(DiscoveryStatus::NotNeeded)
         } else {
@@ -105,6 +116,13 @@ impl SearchService {
                 results.push(SearchResult { song, source });
             }
         }
+        // Stable: within a tier, catalog stays ahead of YouTube and relevance order holds.
+        results.sort_by_key(|result| {
+            tiers
+                .get(&result.song.video_id)
+                .copied()
+                .unwrap_or_else(|| rank::tier(&result.song, false, &query))
+        });
         Ok(SearchResponse {
             results,
             discovery: Discovery {
