@@ -957,6 +957,15 @@ impl Database {
             .bind(serde_json::to_string(prompts).expect("prompts JSON"))
             .execute(&mut *tx)
             .await?;
+        super::game_modes::log_mode(
+            &mut tx,
+            user.id,
+            super::game_modes::LogEvent::Started,
+            mode_id,
+            definition,
+            now,
+        )
+        .await?;
         finish(tx, bound, user, membership, true, clock).await
     }
 
