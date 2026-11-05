@@ -16,7 +16,7 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(game::list_modes, game::read, game::start, game::stop, game::advance, game::submit, game::vote, game::guess, songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(game::list_modes, game::read, game::start, game::stop, game::advance, game::submit, game::vote, game::guess, game::upload_image, game::list_images, game::image, game::delete_image, songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
@@ -106,6 +106,8 @@ mod lobby_documentation_tests {
                 "/api/lobbies/memberships/{membership_id}/game",
                 "/api/lobbies/memberships/{membership_id}/game/advance",
                 "/api/lobbies/memberships/{membership_id}/game/guesses",
+                "/api/lobbies/memberships/{membership_id}/game/images",
+                "/api/lobbies/memberships/{membership_id}/game/images/{image_id}",
                 "/api/lobbies/memberships/{membership_id}/game/submissions",
                 "/api/lobbies/memberships/{membership_id}/game/votes",
                 "/api/lobbies/memberships/{membership_id}/queue",

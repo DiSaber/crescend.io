@@ -199,6 +199,10 @@ fn specs(rules: &Rules) -> Vec<Spec> {
             _ => true,
         })
         .map(|spec| match (guessing, spec.key) {
+            (false, "rounds") if rules.prompt != PromptRule::None => Spec {
+                label: "Rounds (0 = one per prompt)",
+                ..spec
+            },
             (true, "rounds") => Spec {
                 label: "Rounds (0 = every song)",
                 ..spec
@@ -319,6 +323,16 @@ fn party() -> Definition {
     }
 }
 
+fn picture_this() -> Definition {
+    let mut definition = party();
+    definition.name = "Picture This".into();
+    definition.rules.prompt = PromptRule::Image;
+    definition.settings.rounds = 0;
+    definition.settings.collect_seconds = 60;
+    definition.settings.play_seconds = 60;
+    definition
+}
+
 fn name_that_tune() -> Definition {
     Definition {
         name: "Name That Tune".into(),
@@ -381,6 +395,11 @@ pub const PRESETS: &[Preset] = &[
         id: "duel",
         description: "Songs face off in pairs; every pair winner plays.",
         definition: duel,
+    },
+    Preset {
+        id: "picture_this",
+        description: "The host shows a picture; everyone picks the song that fits it best.",
+        definition: picture_this,
     },
     Preset {
         id: "name_that_tune",

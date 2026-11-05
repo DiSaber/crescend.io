@@ -243,6 +243,9 @@ impl Database {
                 if let Err(error) = database.delete_expired_lobbies(now).await {
                     eprintln!("failed to delete expired lobbies: {error}");
                 }
+                if database.sweep_game_images().await.is_err() {
+                    eprintln!("Game image cleanup temporarily unavailable");
+                }
                 if let Err(error) = database
                     .delete_expired_refresh_sessions(now.timestamp())
                     .await

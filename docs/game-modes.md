@@ -189,6 +189,21 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   buzzer). The proposer earns 20 per correct guesser at the reveal: a song nobody
   knows scores its proposer nothing.
 
+- **Prompts (G4).** `PromptRule` gains `text` (text required, no image) and `image`
+  (uploaded image required, text optional). Prompts are part of the start request
+  (1-50, text up to 200 characters) and stored with the game; only the current
+  round's prompt is sent, and players can fetch only the images of rounds the game
+  has reached. Rounds default to one per prompt. `Propose` modes take no prompts.
+- **Images (G4).** New crates: `image` (JPEG, PNG and WebP decoders only) and axum's
+  `multipart` feature. Limits: 5 MB, 4096 px a side, a 256 MB decode allocation cap,
+  30 per lobby. The upload is authorized before its body is read, decoded on a
+  blocking thread, rotated per EXIF and re-encoded (PNG if it has alpha, else JPEG
+  at quality 85), which strips all metadata. Files are stored in
+  `game-images/<lobby_id>/<image_id>.<ext>` beside `data.db` on the data volume and
+  owned by `game_images` rows. A host leaving deletes the rows in the closing
+  transaction and the folder right after; the minute cleanup loop removes folders of
+  closed or expired lobbies, which also covers a crash between the two.
+
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 
 All under the existing bearer auth; game routes require an active membership of the lobby; host-only routes return `403 host_required`.
@@ -205,8 +220,10 @@ All under the existing bearer auth; game routes require an active membership of 
 | `POST .../game/submissions` | player | Pick or propose a song: `{url, request_id}` (same validation as the queue) |
 | `POST .../game/votes` | player | Vote for a submission: `{submission_id}` |
 | `POST .../game/guesses` | player | Guess a title: `{text}` → `{correct, points}` |
-| `POST .../game/images` | host | Upload an image (multipart) → `{image_id}` |
-| `GET .../game/images/{id}` | member | Fetch an image |
+| `POST .../game/images` | host | Upload an image (multipart field `image`) → `{image_id, content_type, width, height, bytes}` |
+| `GET .../game/images` | host | List the lobby's images |
+| `GET .../game/images/{id}` | member | Fetch an image (non-hosts: only images of rounds already reached) |
+| `DELETE .../game/images/{id}` | host | Delete an image the running game does not use |
 
 The snapshot never includes other players' unrevealed submissions, Name That Tune answers before reveal, or vote counts before the vote closes.
 

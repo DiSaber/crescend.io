@@ -9,6 +9,10 @@ use utoipa::ToSchema;
 #[serde(rename_all = "snake_case")]
 pub enum PromptRule {
     None,
+    /// Each round shows the host's next text prompt.
+    Text,
+    /// Each round shows the host's next uploaded image, with optional text.
+    Image,
 }
 
 /// What players submit.
