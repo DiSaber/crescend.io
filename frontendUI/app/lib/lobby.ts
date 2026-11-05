@@ -1,5 +1,5 @@
 // Lobby API client, following docs/lobby-api.md.
-import { apiFetch, getToken, refresh } from "./auth";
+import { apiFetch } from "./auth.ts";
 
 export type Member = { user_id: string; role: "owner" | "member"; joined_at: string };
 export type Lobby = {
@@ -31,8 +31,8 @@ async function errorMessage(response: Response): Promise<string> {
   }
 }
 
-export async function getCurrent(): Promise<CurrentLobby> {
-  const response = await apiFetch("/api/lobbies/current");
+export async function getCurrent(signal?: AbortSignal): Promise<CurrentLobby> {
+  const response = await apiFetch("/api/lobbies/current", { signal });
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
@@ -101,22 +101,13 @@ export async function streamLobbyEvents(
   signal: AbortSignal,
   onEvent: (e: LobbyEvent) => void,
 ): Promise<void> {
-  let token = await getToken();
-  const open = () =>
-    fetch(`/api/lobbies/memberships/${encodeURIComponent(membershipId)}/events`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "text/event-stream" },
-      cache: "no-store",
-      signal,
-    });
-  let response = await open();
-  if (response.status === 401) {
-    token = await refresh();
-    response = await open();
-  }
+  const response = await apiFetch(`/api/lobbies/memberships/${encodeURIComponent(membershipId)}/events`, {
+    headers: { Accept: "text/event-stream" }, signal,
+  });
   if (!response.ok || !response.body) throw new Error(`Stream HTTP ${response.status}`);
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   try {
     for (;;) {
@@ -125,7 +116,11 @@ export async function streamLobbyEvents(
       buffer += decoder.decode(value, { stream: true });
       for (;;) {
         const boundary = /\r?\n\r?\n/.exec(buffer);
-        if (!boundary) break;
+        if (!boundary) {
+          if (buffer.length > 65536) throw new Error("Oversized lobby event");
+          break;
+        }
+        if (boundary.index > 65536) throw new Error("Oversized lobby event");
         const block = buffer.slice(0, boundary.index);
         buffer = buffer.slice(boundary.index + boundary[0].length);
         let event = "message";
@@ -138,6 +133,7 @@ export async function streamLobbyEvents(
       }
     }
   } finally {
-    reader.cancel().catch(() => {});
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

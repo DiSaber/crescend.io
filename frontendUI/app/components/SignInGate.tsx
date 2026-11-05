@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { login, refresh } from "../lib/auth";
+import { login, getToken, subscribeAuth } from "../lib/auth";
 
 type Status = "checking" | "signed-in" | "signed-out" | "error";
 
@@ -10,9 +10,12 @@ export default function SignInGate({ returnTo, children }: { returnTo: string; c
   const [status, setStatus] = useState<Status>("checking");
 
   useEffect(() => {
-    refresh()
-      .then((token) => setStatus(token ? "signed-in" : "signed-out"))
-      .catch(() => setStatus("error"));
+    let active = true;
+    const unsubscribe = subscribeAuth(() => { if (active) setStatus("signed-out"); });
+    getToken()
+      .then((token) => { if (active) setStatus(token ? "signed-in" : "signed-out"); })
+      .catch(() => { if (active) setStatus("error"); });
+    return () => { active = false; unsubscribe(); };
   }, []);
 
   if (status === "signed-in") return <>{children}</>;

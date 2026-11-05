@@ -55,7 +55,7 @@ const response = await fetch('/api/lobbies', {
 if (response.status === 201) {
   const { membership_id, lobby } = await response.json();
   // lobby.join_code is the invitation code; this account is its owner and first member.
-  // Retain this response in client state; current-lobby retrieval comes in a later increment.
+  // Retain this response in client state; current-lobby retrieval is available at GET /api/lobbies/current.
 } else if (response.status === 409) {
   // This account already belongs to an active lobby; retrying will not create another.
 } else {
@@ -65,7 +65,7 @@ if (response.status === 201) {
 
 The refresh cookie does not authorize lobby creation. Refresh and logout do not require a bearer token or contact Google. HttpOnly hides the refresh credential from scripts, but does not stop same-origin XSS from making requests.
 
-Lobby creation requires an empty body and now returns **201** with an object, replacing the old 200/string response. The creator is the sole owner and first member, and the lobby expires 24 hours after creation. See [lobby API](lobby-api.md) for the response and errors. The development database reset for this change discards old accounts and refresh sessions; sign in again after upgrading. Joining, current-lobby retrieval, updates, and leaving will be delivered in later increments.
+Lobby creation requires an empty body and now returns **201** with an object, replacing the old 200/string response. The creator is the sole owner and first member, and the lobby expires 24 hours after creation. See [lobby API](lobby-api.md) for the response and errors. The development database reset for this change discards old accounts and refresh sessions; sign in again after upgrading. Joining, current-lobby retrieval, updates, and leaving are implemented; see [lobby API](lobby-api.md).
 
 ## Serialize refresh and logout
 
@@ -114,4 +114,9 @@ A session expires **30 days after its original creation**. Rotation never extend
 
 This is a breaking change for JSON-token clients. Sign in again; stop reading callback token JSON and stop sending `{refresh_token: ...}` to refresh. Use the browser/cookie-jar flow with the required header, empty requests, and access-only JSON. There is no legacy JSON fallback. Deploy a compatible client and same-origin proxy with this backend. A rollback requires a compatible backend/client pair and fresh login, not deleting users or resetting IDs.
 
-The API implementation and these examples do not add frontend UI or client modules. Before syncing or archiving the `browser-auth-handoff` OpenSpec delta, sync the completed `add-google-auth` baseline first; its `user-auth` specification is the prerequisite. Neither change is archived by this implementation.
+The browser implementation lives in `frontendUI/app/lib/auth.ts` and
+`auth-coordinator.ts`. It uses an origin-wide Web Lock, cross-tab logout intent
+and a non-credential stop flag. Uncertain refresh outcomes require deliberate
+sign-in instead of automatic replay. `SignInGate` removes protected UI after auth
+stops. Frontend verification commands and browser acceptance scenarios are documented in
+`frontendUI/README.md`.
