@@ -111,6 +111,12 @@ impl Database {
                 .execute(&mut *tx)
                 .await?;
             super::queue::reevaluate(&mut tx, lobby_id.as_str()).await?;
+            super::game::settle_after_leave(&mut tx, lobby_id.as_str(), clock())
+                .await
+                .map_err(|error| match error {
+                    crate::game::GameError::Database(error) => LobbyError::from(error),
+                    _ => LobbyError::Unavailable,
+                })?;
             sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
                 .bind(revision)
                 .bind(lobby_id.as_str())
