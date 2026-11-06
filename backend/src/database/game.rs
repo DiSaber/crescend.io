@@ -9,11 +9,11 @@ use crate::{
     auth::AuthenticatedUser,
     game::{
         GameError,
-        answer::{MAX_WRONG_GUESSES, clean_title, matches},
+        answer::{MAX_WRONG_GUESSES, accepts, clean_title},
         images::{self, Processed},
         modes::Definition,
         random_id,
-        rules::{ChallengeRule, CollectRule, Entry},
+        rules::{BallotRule, ChallengeRule, CollectRule, Entry, outright},
     },
     models::{
         game::*,
@@ -260,31 +260,23 @@ async fn tune_song(tx: &mut Tx<'_>, game: &Game) -> Result<(String, i64, String)
 /// Round-robin over proposers (in order of their first proposal), so everyone's
 /// first song plays before anyone's second.
 fn play_order(entries: &[Entry]) -> Vec<Entry> {
-    let mut players: Vec<(i64, Vec<Entry>)> = Vec::new();
-    for entry in entries {
-        match players.iter_mut().find(|(user, _)| *user == entry.user_id) {
-            Some((_, songs)) => songs.push(entry.clone()),
-            None => players.push((entry.user_id, vec![entry.clone()])),
-        }
-    }
-    let longest = players
-        .iter()
-        .map(|(_, songs)| songs.len())
-        .max()
-        .unwrap_or(0);
-    (0..longest)
-        .flat_map(|turn| {
-            players
-                .iter()
-                .filter_map(move |(_, songs)| songs.get(turn).cloned())
-        })
-        .collect()
+    crate::game::rules::interleave(entries)
 }
+
+/// A skipped round's reveal is short: there is nothing to read but the answer.
+const SKIP_REVEAL_SECONDS: i64 = 3;
 
 /// Proposals are in: fix the play order and the round count, then start round 1.
 async fn begin_guessing(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
     let order = play_order(&round_entries(tx, game).await?);
     if order.is_empty() {
+        game.last_result = Some(RoundResult {
+            round: game.round,
+            entries: Vec::new(),
+            answer: None,
+            guesses: Vec::new(),
+            note: Some(ResultNote::NoProposals),
+        });
         return end(tx, game).await;
     }
     for (index, entry) in order.iter().enumerate() {
@@ -303,9 +295,22 @@ async fn begin_guessing(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<()
     start_guess(tx, game, now).await
 }
 
-/// Plays the round's song (hidden) and opens guessing for `play_seconds`.
+/// Plays the round's song (hidden) and opens guessing for `play_seconds`. When
+/// nobody is left who may guess (only the host and the proposer), the round is
+/// skipped straight to a short reveal instead of playing to an empty room.
 async fn start_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
-    let (submission, _, _) = tune_song(tx, game).await?;
+    let (submission, proposer, _) = tune_song(tx, game).await?;
+    let members = members(tx, &game.lobby_id).await?;
+    if !members.iter().any(|u| *u != game.owner && *u != proposer) {
+        tune_result(tx, game, Vec::new(), 0, Some(ResultNote::NobodyToGuess)).await?;
+        let seconds = game
+            .definition
+            .settings
+            .reveal_seconds
+            .min(SKIP_REVEAL_SECONDS);
+        enter(game, Phase::Reveal, Some(later(now, seconds)?));
+        return Ok(());
+    }
     sqlx::query("INSERT INTO game_plays(game_id, seq, round, submission_id, started_at, finished)
         VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM game_plays WHERE game_id = ?), ?, ?, ?, 0)")
         .bind(&game.id).bind(&game.id).bind(game.round).bind(&submission).bind(now)
@@ -317,7 +322,7 @@ async fn start_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
 
 /// Guessing is over: score the proposer and reveal the answer while the clip plays on.
 async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
-    let (submission, proposer, answer) = tune_song(tx, game).await?;
+    let (_, proposer, _) = tune_song(tx, game).await?;
     let guesses: Vec<(i64, i64, i64)> = sqlx::query_as(
         "SELECT user_id, rank, points FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL ORDER BY rank",
     )
@@ -334,6 +339,21 @@ async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
     if points > 0 {
         add_points(tx, game, proposer, points).await?;
     }
+    tune_result(tx, game, guesses, points, None).await?;
+    let ends = later(now, game.definition.settings.reveal_seconds)?;
+    enter(game, Phase::Reveal, Some(ends));
+    Ok(())
+}
+
+/// Reveals the current Name That Tune song as the game's last result.
+async fn tune_result(
+    tx: &mut Tx<'_>,
+    game: &mut Game,
+    guesses: Vec<(i64, i64, i64)>,
+    points: i64,
+    note: Option<ResultNote>,
+) -> Result<(), GameError> {
+    let (submission, proposer, answer) = tune_song(tx, game).await?;
     let (song, _) = song(tx, &submission).await?;
     game.last_result = Some(RoundResult {
         round: game.round,
@@ -350,6 +370,8 @@ async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
             votes: 0,
             winner: true,
             points,
+            group: 0,
+            outcome: ResultOutcome::Won,
         }],
         answer: Some(answer),
         guesses: guesses
@@ -361,9 +383,8 @@ async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
                 points,
             })
             .collect(),
+        note,
     });
-    let ends = later(now, game.definition.settings.reveal_seconds)?;
-    enter(game, Phase::Reveal, Some(ends));
     Ok(())
 }
 
@@ -524,10 +545,18 @@ async fn close_round(
         *votes.entry(submission).or_insert(0) += 1;
     }
     let winners = rules.winner.imp().winners(groups, &votes);
+    // Points per song; the scoreboard adds up each player's songs.
     let points = rules.scoring.imp().round_points(groups, &winners, &votes);
-    for (user, amount) in &points {
+    let mut per_player: HashMap<i64, i64> = HashMap::new();
+    for entry in groups.iter().flatten() {
+        if let Some(amount) = points.get(&entry.id) {
+            *per_player.entry(entry.user_id).or_insert(0) += amount;
+        }
+    }
+    for (user, amount) in &per_player {
         add_points(tx, game, *user, *amount).await?;
     }
+    let pairs = rules.ballot == BallotRule::Pairs;
     let mut seq: i64 =
         sqlx::query_scalar("SELECT coalesce(max(seq), 0) FROM game_plays WHERE game_id = ?")
             .bind(&game.id)
@@ -548,6 +577,17 @@ async fn close_round(
         .fetch_one(&mut **tx)
         .await?;
         let won = winners.iter().any(|w| w.id == entry.id);
+        let group_index = groups.iter().position(|g| g.contains(entry));
+        let group = group_index.map(|i| groups[i].as_slice()).unwrap_or(&[]);
+        let outcome = if pairs && group.len() < 2 {
+            ResultOutcome::Bye
+        } else if pairs && !outright(group, &votes) {
+            ResultOutcome::Tie
+        } else if won {
+            ResultOutcome::Won
+        } else {
+            ResultOutcome::Lost
+        };
         result.push(ResultEntry {
             submission_id: entry.id.clone(),
             song: ResultSong {
@@ -560,24 +600,19 @@ async fn close_round(
             submitted_by_nickname: String::new(),
             votes: votes.get(&entry.id).copied().unwrap_or(0),
             winner: won,
-            points: 0,
+            points: points.get(&entry.id).copied().unwrap_or(0),
+            group: group_index.unwrap_or(0) as i64,
+            outcome,
         });
     }
-    // Per-entry points are shown for the picker's whole round haul on their first entry.
-    for (user, amount) in points {
-        if let Some(first) = result
-            .iter_mut()
-            .find(|e| e.submitted_by_user_id == user.to_string())
-        {
-            first.points = amount;
-        }
-    }
-    result.sort_by_key(|e| !e.winner);
+    // Pairs stay together (winner first in each); one ballot lists winners first.
+    result.sort_by_key(|e| (e.group, !e.winner));
     game.last_result = Some(RoundResult {
         round: game.round,
         entries: result,
         answer: None,
         guesses: Vec::new(),
+        note: None,
     });
     enter(game, Phase::Play, None);
     Ok(())
@@ -663,6 +698,10 @@ async fn song(tx: &mut Tx<'_>, submission: &str) -> Result<(GameSong, i64), Game
 fn utc(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>, GameError> {
     timestamp(seconds).map_err(|_| GameError::Unavailable)
 }
+
+/// No account has ID 0: the board view reads the game as a member who owns
+/// nothing, never the host, so it gets exactly what every guesser may see.
+pub(crate) const BOARD_VIEWER: i64 = 0;
 
 async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameError> {
     let names = super::nicknames::lobby_names(&mut **tx, &game.lobby_id).await?;
@@ -925,15 +964,19 @@ async fn finish(
 }
 
 impl Database {
+    /// `board`: the shared TV view, which gets the guest-visible snapshot even on
+    /// the host's account (no answer, no video while guessing, no own picks).
     pub(crate) async fn game_view(
         &self,
         user: &AuthenticatedUser,
         membership: &str,
+        board: bool,
         clock: impl Fn() -> i64,
     ) -> Result<GameSnapshot, GameError> {
         let mut tx = self.db_pool.begin().await?;
         let bound = authorize(&mut tx, user, membership, Permission::Member, &clock).await?;
-        let view = snapshot(&mut tx, &bound, user.id, membership, clock()).await?;
+        let viewer = if board { BOARD_VIEWER } else { user.id };
+        let view = snapshot(&mut tx, &bound, viewer, membership, clock()).await?;
         check_deadlines(&bound, user, clock())?;
         tx.commit().await?;
         Ok(view)
@@ -953,6 +996,15 @@ impl Database {
         let (existing, _) = current(&mut tx, &bound, clock()).await?;
         if existing.is_some_and(|g| g.status == GameStatus::Running) {
             return Err(GameError::GameRunning);
+        }
+        // With two players each sits out the pair holding their own song, so
+        // nobody could vote in a two-song duel.
+        if definition.rules.ballot == BallotRule::Pairs
+            && members(&mut tx, &bound.lobby_id).await?.len() < 3
+        {
+            return Err(GameError::NotEnoughPlayers(
+                "Duel needs at least 3 players: with 2, nobody can vote in the pair.",
+            ));
         }
         for image in prompts.iter().filter_map(|p| p.image_id.as_deref()) {
             let exists: bool = sqlx::query_scalar(
@@ -1017,6 +1069,14 @@ impl Database {
         let changed = match game {
             None => false,
             Some(mut game) if game.status == GameStatus::Running => {
+                // Ending mid-guess reveals the song on the final screen; the
+                // proposer still scores for whoever named it.
+                if game.phase == Phase::Guess {
+                    close_guess(&mut tx, &mut game, now).await?;
+                    if let Some(result) = game.last_result.as_mut() {
+                        result.note = Some(ResultNote::EndedEarly);
+                    }
+                }
                 end(&mut tx, &mut game).await?;
                 save(&mut tx, &game, now).await?;
                 true
@@ -1149,6 +1209,13 @@ impl Database {
                 if taken {
                     return Err(GameError::DuplicateSong);
                 }
+            } else {
+                // One copy of a video per round, so the ballot never lists it twice.
+                let taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM game_submissions WHERE game_id = ? AND round = ? AND video_id = ?)")
+                    .bind(&game.id).bind(game.round).bind(&video.video_id).fetch_one(&mut *tx).await?;
+                if taken {
+                    return Err(GameError::SongAlreadyPicked);
+                }
             }
             let id = random_id()?;
             let answer = answer_key(&mut tx, video).await?;
@@ -1202,11 +1269,14 @@ impl Database {
         .fetch_optional(&mut *tx)
         .await?;
         let (wrong, rank, earned) = prior.unwrap_or((0, None, 0));
+        // The limit counts wrong guesses only: a right answer is accepted even after
+        // the last wrong one, and a wrong one past the limit is refused uncounted.
+        let right = rank.is_none() && accepts(text, &answer);
         let (guessed, correct, points) = if rank.is_some() {
             (false, true, earned)
-        } else if wrong >= MAX_WRONG_GUESSES {
+        } else if !right && wrong >= MAX_WRONG_GUESSES {
             return Err(GameError::GuessLimit);
-        } else if matches(text, &answer) {
+        } else if right {
             let rank: i64 = sqlx::query_scalar(
                 "SELECT count(*) + 1 FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL",
             )
@@ -1274,7 +1344,11 @@ impl Database {
             .cloned()
             .ok_or(GameError::SubmissionUnavailable)?;
         if !may_vote(&game, &groups, &entry, user.id) {
-            return Err(GameError::SelfVote);
+            return Err(if entry.user_id == user.id {
+                GameError::SelfVote
+            } else {
+                GameError::OwnPair
+            });
         }
         let votes = round_votes(&mut tx, &game).await?;
         let mine: Vec<String> = votes
@@ -1664,6 +1738,8 @@ impl Database {
 }
 
 /// The curated starter title when the song has one, else the cleaned YouTube title.
+/// Either way `accepts` treats bracketed parts and "ft." tails as optional, so the
+/// starter title "Old Town Road (Remix)" also takes "Old Town Road".
 async fn answer_key(tx: &mut Tx<'_>, video: &VideoMetadata) -> Result<String, GameError> {
     let starter: Option<String> = sqlx::query_scalar(
         "SELECT m.title FROM catalog_metadata m JOIN catalog_songs s ON s.id = m.song_id

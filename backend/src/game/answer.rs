@@ -193,6 +193,37 @@ fn tolerance(length: usize) -> usize {
     }
 }
 
+/// The answer key without its optional parts: bracketed or parenthesized text and
+/// a featured-artist tail ("Old Town Road (Remix)" -> "Old Town Road"). The same
+/// cleanup YouTube titles get, minus the artist split, since an answer key holds
+/// only the song name.
+pub fn core_title(answer: &str) -> String {
+    let mut text = strip_brackets(answer);
+    text.push(' ');
+    if let Some(cut) = FEATURING
+        .iter()
+        .filter_map(|tail| find_ignore_case(&text, tail))
+        .min()
+    {
+        text.truncate(cut);
+    }
+    drop_trailing_junk(&trim_title(&text))
+}
+
+/// Whether a guess names the song: it matches the full answer key, or the key
+/// with its optional parts left out, so "Dracula" and "Dracula (JENNIE Remix)"
+/// both count for "Dracula (JENNIE Remix)".
+pub fn accepts(guess: &str, answer: &str) -> bool {
+    let core = core_title(answer);
+    let keys = [answer, core.as_str()];
+    // The guess may carry the same optional parts ("Dracula [Official Video]").
+    let short = core_title(guess);
+    [guess, short.as_str()]
+        .iter()
+        .filter(|g| !g.trim().is_empty())
+        .any(|g| keys.iter().filter(|k| !k.is_empty()).any(|k| matches(g, k)))
+}
+
 /// A guess matches when, after normalization, it is within a small edit distance of
 /// the answer (relative to its length), or it contains every significant answer word
 /// (words of five or more letters may have one typo) with at most three extra words.
@@ -342,6 +373,50 @@ mod tests {
                 "{guess:?} should not match {answer:?}"
             );
         }
+    }
+
+    #[test]
+    fn curated_titles_take_their_bracketed_parts_and_featured_artists_as_optional() {
+        for (guess, answer) in [
+            ("Old Town Road", "Old Town Road (Remix)"),
+            ("old town road remix", "Old Town Road (Remix)"),
+            ("Old Town Road (Remix)", "Old Town Road (Remix)"),
+            ("Dracula", "Dracula (JENNIE Remix)"),
+            ("dracula jennie remix", "Dracula (JENNIE Remix)"),
+            ("A Bar Song", "A Bar Song (Tipsy)"),
+            ("a bar song tipsy", "A Bar Song (Tipsy)"),
+            ("Waka Waka", "Waka Waka (This Time for Africa)"),
+            (
+                "Somebody That I Used To Know",
+                "Somebody That I Used To Know (feat. Kimbra)",
+            ),
+            ("Despacito", "Despacito ft. Daddy Yankee"),
+            ("Old Town Road ft. Billy Ray Cyrus", "Old Town Road (Remix)"),
+            ("Dracula [Official Video]", "Dracula (JENNIE Remix)"),
+            ("Bohemian Rhapsody ft. Queen", "Bohemian Rhapsody"),
+            ("Choosin Texas", "Choosin' Texas"),
+        ] {
+            assert!(accepts(guess, answer), "{guess:?} should name {answer:?}");
+        }
+        for (guess, answer) in [
+            ("Tipsy", "A Bar Song (Tipsy)"),
+            ("Remix", "Old Town Road (Remix)"),
+            ("Old Town", "Old Town Road (Remix)"),
+            ("Lil Nas X", "Old Town Road (Remix)"),
+        ] {
+            assert!(
+                !accepts(guess, answer),
+                "{guess:?} should not name {answer:?}"
+            );
+        }
+        assert_eq!(core_title("Old Town Road (Remix)"), "Old Town Road");
+        assert_eq!(core_title("A Bar Song (Tipsy)"), "A Bar Song");
+        assert_eq!(
+            core_title("(Remix)"),
+            "",
+            "nothing left: the full key is the only answer"
+        );
+        assert_eq!(core_title("Bohemian Rhapsody"), "Bohemian Rhapsody");
     }
 
     #[test]

@@ -165,19 +165,26 @@ pub(super) async fn list_modes(
 }
 
 #[utoipa::path(get, path = "/api/lobbies/memberships/{membership_id}/game", tag = "Games",
-    security(("bearer_auth" = [])), params(("membership_id" = String, Path)),
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path),
+        ("view" = Option<String>, Query, description = "`board` for the shared TV view: the guest-visible snapshot even on the host's account")),
     responses((status = 200, body = GameSnapshot), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
         (status = 403, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
 pub(super) async fn read(
     State(app): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
     path: MembershipPath,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     request: Request,
 ) -> Result<Json<GameSnapshot>, GameError> {
     let id = membership(path)?;
+    let board = match query.as_deref() {
+        None | Some("") => false,
+        Some("view=board") => true,
+        Some(_) => return Err(GameError::InvalidRequest),
+    };
     bodyless(request).await?;
     app.database
-        .game_view(&user, &id, || (app.auth.clock)())
+        .game_view(&user, &id, board, || (app.auth.clock)())
         .await
         .map(Json)
 }
@@ -563,6 +570,18 @@ impl GameError {
                 409,
                 "submission_limit_reached",
                 "You have submitted all your songs for this round.",
+            ),
+            Self::SongAlreadyPicked => (
+                409,
+                "song_already_picked",
+                "Someone already picked that song this round. Pick another.",
+            ),
+            Self::NotEnoughPlayers(message) => (409, "not_enough_players", message),
+            Self::InvalidModeName(message) => (400, "invalid_mode_name", message),
+            Self::OwnPair => (
+                409,
+                "own_pair",
+                "Your song is in this pair, so you sit this one out.",
             ),
             Self::DuplicateSong => (
                 409,
