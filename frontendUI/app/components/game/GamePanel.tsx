@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import SongPicker from "../SongPicker";
-import { Countdown, GameImage, Scoreboard, SongRow, phaseName, playerName, roundLabel } from "./bits";
+import { Countdown, GameImage, Scoreboard, SongRow, phaseName, playerName, roundLabel, type NameFn } from "./bits";
 import { advanceGame, castVote, endGame, guessTitle, submitSong, type GameMutation, type GameView, type RoundResult } from "../../lib/game";
 import { newRequestId, QueueError } from "../../lib/queue";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
@@ -32,7 +32,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
   const [feedback, setFeedback] = useState<{ phaseSeq: number; value: Feedback }>({ phaseSeq: -1, value: null });
   if (!game || !membershipId) return null;
   const busy = state.gameBusy;
-  const name = (id: string | null | undefined) => playerName(id, ownerId, me);
+  const name = (id: string | null | undefined, nickname: string | null | undefined) => playerName(id, nickname, me);
 
   async function submit(url: string, retry?: Attempt) {
     if (busy && !retry) return;
@@ -174,7 +174,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
         {playing && game.phase !== "reveal" && game.phase !== "guess" && (
           <div>
             <p className="text-xs text-zinc-400 mb-1">Now playing{game.up_next_count > 0 && ` · ${game.up_next_count} more decided`}</p>
-            <SongRow song={playing.song!} note={`picked by ${name(playing.submitted_by_user_id)}`} />
+            <SongRow song={playing.song!} note={`picked by ${name(playing.submitted_by_user_id, playing.submitted_by_nickname)}`} />
             {!isHost && <p className="mt-1 text-xs text-zinc-500">Sound plays on the host&apos;s device.</p>}
           </div>
         )}
@@ -186,7 +186,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
         {game.phase === "ended" && (
           <p className="text-lg">
             {game.scoreboard[0] && game.scoreboard[0].points > 0
-              ? <>Winner: <strong>{name(game.scoreboard[0].user_id)}</strong> with {game.scoreboard[0].points} points.</>
+              ? <>Winner: <strong>{name(game.scoreboard[0].user_id, game.scoreboard[0].nickname)}</strong> with {game.scoreboard[0].points} points.</>
               : "No points this time."}
           </p>
         )}
@@ -250,14 +250,14 @@ function Ballot({ game, busy, onVote }: { game: GameView; busy: boolean; onVote:
   );
 }
 
-function RoundResults({ result, name }: { result: RoundResult; name: (id: string) => string }) {
+function RoundResults({ result, name }: { result: RoundResult; name: NameFn }) {
   return (
     <details className="rounded-lg bg-zinc-950/50 p-3" open>
       <summary className="cursor-pointer min-h-11 flex items-center text-sm font-semibold">Round {result.round} results</summary>
       <ul className="flex flex-col gap-2 mt-2">
         {result.entries.map(e => (
           <li key={e.submission_id}>
-            <SongRow song={e.song} note={`${name(e.submitted_by_user_id)} · ${e.votes} vote${e.votes === 1 ? "" : "s"}${e.points ? ` · +${e.points}` : ""}`}>
+            <SongRow song={e.song} note={`${name(e.submitted_by_user_id, e.submitted_by_nickname)} · ${e.votes} vote${e.votes === 1 ? "" : "s"}${e.points ? ` · +${e.points}` : ""}`}>
               {e.winner && <span className="px-2 py-1 rounded bg-[#FF0048] text-xs font-bold">Winner</span>}
             </SongRow>
           </li>
@@ -267,18 +267,18 @@ function RoundResults({ result, name }: { result: RoundResult; name: (id: string
   );
 }
 
-function Reveal({ result, name, me }: { result: RoundResult; name: (id: string) => string; me: string | undefined }) {
+function Reveal({ result, name, me }: { result: RoundResult; name: NameFn; me: string | undefined }) {
   const song = result.entries[0];
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-zinc-400">Round {result.round}: it was</p>
       <p className="text-3xl font-extrabold text-[#05EEFF]">{result.answer ?? song?.song.title}</p>
-      {song && <SongRow song={song.song} note={`proposed by ${name(song.submitted_by_user_id)}${song.points ? ` · +${song.points}` : ""}`} />}
+      {song && <SongRow song={song.song} note={`proposed by ${name(song.submitted_by_user_id, song.submitted_by_nickname)}${song.points ? ` · +${song.points}` : ""}`} />}
       {result.guesses.length === 0 ? <p className="text-zinc-300">Nobody named it.</p> : (
         <ol className="flex flex-col gap-1" aria-label="Correct guesses">
           {result.guesses.map(g => (
             <li key={g.user_id} className={`flex justify-between rounded-lg px-3 py-2 text-sm ${g.user_id === me ? "bg-[#5C172E]" : "bg-zinc-800"}`}>
-              <span>{g.rank}. {name(g.user_id)}</span><span className="font-mono">+{g.points}</span>
+              <span>{g.rank}. {name(g.user_id, g.nickname)}</span><span className="font-mono">+{g.points}</span>
             </li>
           ))}
         </ol>

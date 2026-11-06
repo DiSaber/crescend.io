@@ -14,6 +14,7 @@ use std::{
     time::Duration,
 };
 
+mod guest_join;
 mod us1_http;
 mod us1_storage;
 mod us2_http;

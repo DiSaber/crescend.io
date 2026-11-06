@@ -5,7 +5,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import SignInGate from "../../components/SignInGate";
-import { Countdown, GameImage, Scoreboard, phaseName, playerName, roundLabel } from "../../components/game/bits";
+import { Countdown, GameImage, Scoreboard, phaseName, playerName, roundLabel, type NameFn } from "../../components/game/bits";
 import { QueueSession } from "../../lib/queue-state";
 import type { GameView } from "../../lib/game";
 
@@ -31,7 +31,7 @@ function Board() {
     </div>
   );
   const ownerId = lobby.owner_user_id;
-  const name = (id: string | null | undefined) => playerName(id, ownerId, undefined);
+  const name = (id: string | null | undefined, nickname: string | null | undefined) => playerName(id, nickname, undefined);
   const current = state.queue?.current;
 
   return (
@@ -91,7 +91,7 @@ function Board() {
   );
 }
 
-function PhaseBoard({ game, name }: { game: GameView; name: (id: string | null | undefined) => string }) {
+function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
   const big = "text-3xl sm:text-4xl";
   const playing = game.phase !== "guess" && game.now_playing && !game.now_playing.hidden ? game.now_playing.song : null;
   const winners = game.last_result?.entries.filter(e => e.winner) ?? [];
@@ -124,10 +124,10 @@ function PhaseBoard({ game, name }: { game: GameView; name: (id: string | null |
       {game.phase === "reveal" && game.last_result && (
         <div className="flex flex-col gap-4">
           <p className="text-5xl sm:text-6xl font-extrabold text-[#05EEFF]">{game.last_result.answer ?? game.last_result.entries[0]?.song.title}</p>
-          {game.last_result.entries[0] && <p className="text-2xl text-zinc-300">Proposed by {name(game.last_result.entries[0].submitted_by_user_id)} · +{game.last_result.entries[0].points}</p>}
+          {game.last_result.entries[0] && <p className="text-2xl text-zinc-300">Proposed by {name(game.last_result.entries[0].submitted_by_user_id, game.last_result.entries[0].submitted_by_nickname)} · +{game.last_result.entries[0].points}</p>}
           <ol className="flex flex-col gap-2">
             {game.last_result.guesses.length === 0 && <li className="text-2xl">Nobody named it.</li>}
-            {game.last_result.guesses.map(g => <li key={g.user_id} className="text-2xl">{g.rank}. {name(g.user_id)} <span className="font-mono">+{g.points}</span></li>)}
+            {game.last_result.guesses.map(g => <li key={g.user_id} className="text-2xl">{g.rank}. {name(g.user_id, g.nickname)} <span className="font-mono">+{g.points}</span></li>)}
           </ol>
         </div>
       )}
@@ -135,16 +135,16 @@ function PhaseBoard({ game, name }: { game: GameView; name: (id: string | null |
         <div className="flex items-center gap-4">
           <img src={playing.thumbnail_url} alt="" className="h-24 w-40 rounded-lg object-cover shrink-0" />
           <div className="min-w-0">
-            <p className="text-lg text-zinc-400">Now playing · picked by {name(game.now_playing?.submitted_by_user_id)}</p>
+            <p className="text-lg text-zinc-400">Now playing · picked by {name(game.now_playing?.submitted_by_user_id, game.now_playing?.submitted_by_nickname)}</p>
             <p className="text-3xl font-bold line-clamp-2">{playing.title}</p>
           </div>
         </div>
       )}
       {game.phase !== "reveal" && game.phase !== "guess" && game.mode.rules.collect === "pick" && winners.length > 0 && (
-        <p className="text-2xl text-zinc-300">Round {game.last_result!.round} winner{winners.length > 1 ? "s" : ""}: {winners.map(w => `${w.song.title} (${name(w.submitted_by_user_id)})`).join(", ")}</p>
+        <p className="text-2xl text-zinc-300">Round {game.last_result!.round} winner{winners.length > 1 ? "s" : ""}: {winners.map(w => `${w.song.title} (${name(w.submitted_by_user_id, w.submitted_by_nickname)})`).join(", ")}</p>
       )}
       {game.phase === "ended" && game.scoreboard[0] && (
-        <p className="text-5xl font-extrabold">{game.scoreboard[0].points > 0 ? `${name(game.scoreboard[0].user_id)} wins!` : "Game over"}</p>
+        <p className="text-5xl font-extrabold">{game.scoreboard[0].points > 0 ? `${name(game.scoreboard[0].user_id, game.scoreboard[0].nickname)} wins!` : "Game over"}</p>
       )}
     </div>
   );

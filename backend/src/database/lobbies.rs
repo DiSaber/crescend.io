@@ -8,6 +8,8 @@ use sqlx::{Acquire, Row};
 #[derive(Debug)]
 pub enum LobbyError {
     Unauthorized,
+    GoogleAccountRequired,
+    InvalidNickname,
     MembershipForbidden,
     AlreadyInLobby,
     InvalidRequest,
@@ -182,8 +184,7 @@ impl Database {
             let id: LobbyId = row.try_get("id")?;
             let owner: i64 = row.try_get("owner_user_id")?;
             let revision: i64 = row.try_get("revision")?;
-            let members: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
-                .bind(id.as_str()).fetch_all(&mut *tx).await?;
+            let members = roster(&mut tx, &id, owner).await?;
             view = CurrentLobby {
                 membership_id: Some(row.try_get("membership_id")?),
                 lobby: Some(LobbyView {
@@ -193,14 +194,7 @@ impl Database {
                     created_at: row.try_get("created_at")?,
                     expires_at: row.try_get("expires_at")?,
                     revision: revision.to_string(),
-                    members: members
-                        .into_iter()
-                        .map(|(id, joined_at)| MemberView {
-                            user_id: id.to_string(),
-                            role: MemberRole::for_user(id, owner),
-                            joined_at,
-                        })
-                        .collect(),
+                    members,
                 }),
             };
         }
@@ -248,6 +242,20 @@ impl Database {
         &self,
         user_id: i64,
         code: &str,
+        clock: impl Fn() -> i64,
+        allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
+    ) -> Result<(CurrentLobby, bool, Option<(LobbyId, i64)>), LobbyError> {
+        self.join_lobby_named(user_id, code, None, clock, allocate)
+            .await
+    }
+
+    /// Joins with an already normalized nickname, or none: keep this lobby's name, else
+    /// use the account's last one. Renaming inside the same lobby counts as a change.
+    pub(crate) async fn join_lobby_named(
+        &self,
+        user_id: i64,
+        code: &str,
+        nickname: Option<&str>,
         clock: impl Fn() -> i64,
         mut allocate: impl FnMut() -> Result<MembershipId, LobbyError>,
     ) -> Result<(CurrentLobby, bool, Option<(LobbyId, i64)>), LobbyError> {
@@ -303,8 +311,27 @@ impl Database {
         } else {
             None
         };
-        let changed = existing.is_none();
+        let (wanted, explicit) = super::nicknames::resolve(
+            &mut tx,
+            lobby_id.as_str(),
+            user_id,
+            nickname,
+            super::nicknames::DEFAULT_GUEST,
+        )
+        .await?;
+        let (_, renamed) =
+            super::nicknames::assign(&mut tx, lobby_id.as_str(), user_id, &wanted, explicit)
+                .await?;
+        let changed = existing.is_none() || renamed;
         let membership_id = if let Some(id) = existing {
+            if renamed {
+                revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
+                sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+                    .bind(revision)
+                    .bind(lobby_id.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+            }
             id
         } else {
             let mut allocated = None;
@@ -328,8 +355,7 @@ impl Database {
                 .await?;
             id
         };
-        let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
-            .bind(lobby_id.as_str()).fetch_all(&mut *tx).await?;
+        let members = roster(&mut tx, &lobby_id, owner).await?;
         let view = CurrentLobby {
             membership_id: Some(membership_id),
             lobby: Some(LobbyView {
@@ -339,14 +365,7 @@ impl Database {
                 created_at: lobby.try_get("created_at")?,
                 expires_at: lobby.try_get("expires_at")?,
                 revision: revision.to_string(),
-                members: rows
-                    .into_iter()
-                    .map(|(id, joined_at)| MemberView {
-                        user_id: id.to_string(),
-                        role: MemberRole::for_user(id, owner),
-                        joined_at,
-                    })
-                    .collect(),
+                members,
             }),
         };
         tx.commit().await?;
@@ -407,6 +426,29 @@ impl Database {
     pub(crate) async fn create_owned_lobby_with(
         &self,
         user_id: i64,
+        clock: impl Fn() -> i64,
+        allocate: impl FnMut() -> Result<LobbyAllocation, LobbyError>,
+    ) -> Result<CurrentLobby, LobbyError> {
+        self.create_named_lobby_with(user_id, None, clock, allocate)
+            .await
+    }
+
+    pub async fn create_named_lobby(
+        &self,
+        user_id: i64,
+        nickname: Option<&str>,
+        clock: impl Fn() -> i64,
+    ) -> Result<CurrentLobby, LobbyError> {
+        self.create_named_lobby_with(user_id, nickname, clock, || {
+            LobbyAllocation::random().map_err(|_| LobbyError::Unavailable)
+        })
+        .await
+    }
+
+    pub(crate) async fn create_named_lobby_with(
+        &self,
+        user_id: i64,
+        nickname: Option<&str>,
         clock: impl Fn() -> i64,
         mut allocate: impl FnMut() -> Result<LobbyAllocation, LobbyError>,
     ) -> Result<CurrentLobby, LobbyError> {
@@ -473,6 +515,22 @@ impl Database {
                 .bind(candidate.lobby_id.as_str())
                 .execute(&mut *attempt)
                 .await?;
+            let (wanted, explicit) = super::nicknames::resolve(
+                &mut attempt,
+                candidate.lobby_id.as_str(),
+                user_id,
+                nickname,
+                super::nicknames::DEFAULT_HOST,
+            )
+            .await?;
+            let (name, _) = super::nicknames::assign(
+                &mut attempt,
+                candidate.lobby_id.as_str(),
+                user_id,
+                &wanted,
+                explicit,
+            )
+            .await?;
             attempt.commit().await?;
             let view = CurrentLobby {
                 membership_id: Some(candidate.membership_id),
@@ -486,6 +544,7 @@ impl Database {
                     members: vec![MemberView {
                         user_id: user_id.to_string(),
                         role: MemberRole::for_user(user_id, user_id),
+                        nickname: name,
                         joined_at: created_at,
                     }],
                 }),
@@ -495,6 +554,26 @@ impl Database {
         }
         Err(LobbyError::Unavailable)
     }
+}
+
+/// Current members in join order, each with their name in this lobby.
+async fn roster(
+    conn: &mut sqlx::SqliteConnection,
+    lobby: &LobbyId,
+    owner: i64,
+) -> Result<Vec<MemberView>, sqlx::Error> {
+    let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
+        .bind(lobby.as_str()).fetch_all(&mut *conn).await?;
+    let names = super::nicknames::lobby_names(&mut *conn, lobby.as_str()).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, joined_at)| MemberView {
+            user_id: id.to_string(),
+            role: MemberRole::for_user(id, owner),
+            nickname: super::nicknames::name_of(&names, id),
+            joined_at,
+        })
+        .collect())
 }
 
 // All lobby timestamps have UTC second precision, including SQLx's +00:00 encoding.

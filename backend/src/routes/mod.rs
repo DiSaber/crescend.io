@@ -16,10 +16,10 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(game::list_modes, game::save_mode, game::delete_mode, game::read, game::start, game::stop, game::advance, game::submit, game::vote, game::guess, game::upload_image, game::list_images, game::image, game::delete_image, songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(game::list_modes, game::save_mode, game::delete_mode, game::read, game::start, game::stop, game::advance, game::submit, game::vote, game::guess, game::upload_image, game::list_images, game::image, game::delete_image, songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout, auth::guest_sign_in, auth::guest_status, auth::me),
     modifiers(&Security),
     tags(
-        (name = "Authentication", description = "Google login"),
+        (name = "Authentication", description = "Google login and guest sign-in"),
         (name = "Games", description = "Game modes and the per-lobby game engine"),
         (name = "Lobbies", description = "Lobby endpoints"),
         (name = "Queue", description = "Persistent membership-bound song queue"),
@@ -61,6 +61,7 @@ pub fn router(jwt: JwtAuth) -> Router<AppState> {
         .nest("/api/lobbies", lobbies::router())
         .nest("/api/game-modes", game::modes_router())
         .route("/api/songs/search", axum::routing::get(songs::search))
+        .route("/api/me", axum::routing::get(auth::me))
         .route_layer(AsyncRequireAuthorizationLayer::new(jwt))
         .layer(axum::middleware::map_response(lobby_no_store));
     Router::new()
@@ -72,6 +73,10 @@ pub fn router(jwt: JwtAuth) -> Router<AppState> {
             axum::routing::post(auth::refresh_tokens),
         )
         .route("/api/auth/logout", axum::routing::post(auth::logout))
+        .route(
+            "/api/auth/guest",
+            axum::routing::post(auth::guest_sign_in).get(auth::guest_status),
+        )
         .nest("/api/youtube", youtube::router())
 }
 
@@ -156,9 +161,14 @@ mod lobby_documentation_tests {
             "#/components/schemas/JoinLobbyRequest"
         );
         let operation = &paths["/api/lobbies"]["post"];
-        assert!(operation["requestBody"].is_null());
+        // The nickname body is optional: an empty body still creates the lobby.
+        assert_eq!(
+            operation["requestBody"]["content"]["application/json"]["schema"]["oneOf"][0]["$ref"],
+            "#/components/schemas/CreateLobbyRequest"
+        );
+        assert_ne!(operation["requestBody"]["required"], true);
         assert!(operation["responses"]["200"].is_null());
-        for status in ["201", "400", "401", "409", "500", "503"] {
+        for status in ["201", "400", "401", "403", "409", "500", "503"] {
             assert!(
                 operation["responses"][status].is_object(),
                 "missing {status}"
@@ -199,6 +209,7 @@ mod lobby_documentation_tests {
             "LobbyId",
             "MembershipId",
             "JoinLobbyRequest",
+            "CreateLobbyRequest",
             "QueueView",
             "QueueEntry",
             "VotingView",

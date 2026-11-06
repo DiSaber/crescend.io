@@ -342,6 +342,7 @@ async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
                 thumbnail_url: song.thumbnail_url,
             },
             submitted_by_user_id: proposer.to_string(),
+            submitted_by_nickname: String::new(),
             votes: 0,
             winner: true,
             points,
@@ -351,6 +352,7 @@ async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), G
             .into_iter()
             .map(|(user, rank, points)| GuessResult {
                 user_id: user.to_string(),
+                nickname: String::new(),
                 rank,
                 points,
             })
@@ -551,6 +553,7 @@ async fn close_round(
                 thumbnail_url: song.3,
             },
             submitted_by_user_id: entry.user_id.to_string(),
+            submitted_by_nickname: String::new(),
             votes: votes.get(&entry.id).copied().unwrap_or(0),
             winner: won,
             points: 0,
@@ -644,6 +647,9 @@ fn utc(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>, GameError> {
 }
 
 async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameError> {
+    let names = super::nicknames::lobby_names(&mut **tx, &game.lobby_id).await?;
+    let name = |id: i64| super::nicknames::name_of(&names, id);
+    let named = |text: &str| text.parse::<i64>().map(name).unwrap_or_default();
     // Name That Tune proposals all belong to the single collect round.
     let submission_round = if proposing(game) { 1 } else { game.round };
     let mine: Vec<String> = sqlx::query_scalar(
@@ -723,6 +729,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
             hidden,
             song: (!hidden).then_some(song),
             submitted_by_user_id: (!hidden).then(|| picker.to_string()),
+            submitted_by_nickname: (!hidden).then(|| name(picker)),
             start_seconds: game.definition.settings.clip_start_seconds,
             started_at: utc(started)?,
             ends_at: ends.map(utc).transpose()?,
@@ -792,7 +799,15 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
         my_submissions,
         submission_count,
         ballot,
-        last_result: game.last_result.clone(),
+        last_result: game.last_result.clone().map(|mut result| {
+            for entry in &mut result.entries {
+                entry.submitted_by_nickname = named(&entry.submitted_by_user_id);
+            }
+            for guess in &mut result.guesses {
+                guess.nickname = named(&guess.user_id);
+            }
+            result
+        }),
         now_playing,
         guess,
         up_next_count,
@@ -800,6 +815,8 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
             .into_iter()
             .map(|(user_id, points)| ScoreEntry {
                 user_id: user_id.to_string(),
+                nickname: name(user_id),
+
                 points,
                 active: active.contains(&user_id),
             })
