@@ -18,6 +18,11 @@ impl LobbyId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// An ID that came from the database.
+    pub(crate) fn from_trusted(id: String) -> Self {
+        Self(id)
+    }
 }
 
 /// Identifies one membership generation, not a user or invitation code.
@@ -135,7 +140,7 @@ pub struct CurrentLobby {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JoinLobbyRequest {
-    /// Six ASCII letters/digits, ignoring surrounding ASCII whitespace and case.
+    /// Six letters or digits, ignoring case and any spaces or dashes.
     pub join_code: String,
     /// Optional name for this lobby: 1-24 characters after trimming, no control
     /// characters. A clash in the lobby gets " 2", " 3", ... appended. When absent the
@@ -154,10 +159,16 @@ pub struct CreateLobbyRequest {
 
 impl JoinLobbyRequest {
     pub fn normalized_code(&self) -> Option<String> {
-        let code = self.join_code.trim_matches(|c: char| {
-            matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{000b}' | '\u{000c}')
-        });
-        (code.len() == 6 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
-            .then(|| code.to_ascii_uppercase())
+        normalize_code(&self.join_code)
     }
+}
+
+/// Six letters or digits, ignoring case and any spaces or dashes ("abc 123", "ABC-123").
+pub fn normalize_code(raw: &str) -> Option<String> {
+    let code: String = raw
+        .chars()
+        .filter(|c| !(c.is_whitespace() || matches!(c, '-' | '\u{2010}'..='\u{2015}')))
+        .collect();
+    (code.len() == 6 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| code.to_ascii_uppercase())
 }

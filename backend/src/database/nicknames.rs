@@ -6,29 +6,79 @@ use super::Database;
 use chrono::Utc;
 use sqlx::SqliteConnection;
 use std::collections::HashMap;
+use unicode_segmentation::UnicodeSegmentation;
 
+/// Most user-perceived characters (grapheme clusters) in a name.
 pub const MAX_CHARS: usize = 24;
+/// Code points one character may use: a family emoji with skin tones needs 11.
+/// This bounds stacked combining marks.
+pub const MAX_SCALARS_PER_CHAR: usize = 12;
+/// Code points a stored name may use; the tables' CHECK (SQLite length()) matches.
+pub const MAX_SCALARS: usize = MAX_CHARS * MAX_SCALARS_PER_CHAR;
 /// Used when a client sends no nickname and the account has never chosen one.
 pub const DEFAULT_GUEST: &str = "Player";
 pub const DEFAULT_HOST: &str = "Host";
 
 /// Trims, collapses inner whitespace runs to one space and checks the rules:
-/// 1-24 characters, no control or invisible formatting characters.
+/// 1-24 user-perceived characters, no control or invisible formatting characters.
+/// Zero-width joiners and variation selectors are allowed only inside emoji
+/// sequences (family and flag emoji), where they draw one visible picture.
 pub fn normalize(raw: &str) -> Option<String> {
-    if raw.chars().any(forbidden) {
-        return None;
+    let chars: Vec<char> = raw.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        let before = i.checked_sub(1).map(|j| chars[j]);
+        let after = chars.get(i + 1).copied();
+        let allowed = match c {
+            // A ZWJ glues two emoji: 👨‍👩‍👧, 🏳️‍🌈.
+            '\u{200D}' => before.is_some_and(emoji_part) && after.is_some_and(pictographic),
+            // Emoji or text presentation of the emoji (or keycap base, 1️⃣) before it.
+            '\u{FE0E}' | '\u{FE0F}' => before
+                .is_some_and(|b| pictographic(b) || b.is_ascii_digit() || b == '#' || b == '*'),
+            _ => !forbidden(c),
+        };
+        if !allowed {
+            return None;
+        }
     }
     let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let count = name.chars().count();
+    let mut count = 0;
+    for grapheme in name.graphemes(true) {
+        count += 1;
+        if grapheme.chars().count() > MAX_SCALARS_PER_CHAR {
+            return None;
+        }
+    }
     (1..=MAX_CHARS).contains(&count).then_some(name)
 }
 
-/// Control characters (Cc) plus the zero-width and bidirectional formatting characters
-/// that can make two names look alike or reorder surrounding text.
+/// Control characters (Cc), variation selectors outside emoji, and the zero-width and
+/// bidirectional formatting characters that can make two names look alike or reorder
+/// surrounding text.
 fn forbidden(c: char) -> bool {
     c.is_control()
         || matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
-            | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+            | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{FE00}'..='\u{FE0F}')
+}
+
+/// Emoji pictographs: an approximation of Unicode's Extended_Pictographic that covers
+/// every emoji ZWJ sequence in use.
+fn pictographic(c: char) -> bool {
+    matches!(c, '\u{00A9}' | '\u{00AE}' | '\u{203C}' | '\u{2049}' | '\u{2122}' | '\u{2139}'
+        | '\u{2194}'..='\u{21FF}' | '\u{2300}'..='\u{23FF}' | '\u{24C2}' | '\u{25A0}'..='\u{27BF}'
+        | '\u{2900}'..='\u{297F}' | '\u{2B00}'..='\u{2BFF}' | '\u{3030}' | '\u{303D}' | '\u{3297}'
+        | '\u{3299}' | '\u{1F000}'..='\u{1FAFF}')
+}
+
+/// What may come right before a ZWJ: an emoji, its presentation selector, a skin tone
+/// (inside the 1F000 block) or the end of a tag sequence.
+fn emoji_part(c: char) -> bool {
+    pictographic(c) || c == '\u{FE0F}' || c == '\u{E007F}'
+}
+
+/// User-perceived characters (grapheme clusters), as the 24-character rule counts them.
+pub fn length(name: &str) -> usize {
+    name.graphemes(true).count()
 }
 
 /// Case-insensitive key for uniqueness within a lobby.
@@ -42,8 +92,8 @@ fn candidate(base: &str, n: u32) -> String {
         return base.to_owned();
     }
     let suffix = format!(" {n}");
-    let keep = MAX_CHARS - suffix.chars().count();
-    let stem: String = base.chars().take(keep).collect();
+    let keep = MAX_CHARS - suffix.len();
+    let stem: String = base.graphemes(true).take(keep).collect();
     format!("{}{suffix}", stem.trim_end())
 }
 
@@ -173,12 +223,15 @@ pub(crate) async fn resolve(
 
 impl Database {
     pub(super) async fn create_nickname_tables(&self) -> Result<(), sqlx::Error> {
-        // New tables only: existing users/membership rows are not rebuilt.
+        // New tables only: existing users/membership rows are not rebuilt. The CHECK
+        // counts code points (SQLite length()), MAX_SCALARS of them; the 24-character
+        // rule counts what the eye sees, so a 7-code-point family emoji is one.
+        const _: () = assert!(MAX_SCALARS == 288);
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS lobby_nicknames (
                 lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
                 user_id INTEGER NOT NULL REFERENCES users(id),
-                nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 24),
+                nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 288),
                 folded TEXT NOT NULL,
                 PRIMARY KEY(lobby_id, user_id),
                 UNIQUE(lobby_id, folded)
@@ -189,12 +242,49 @@ impl Database {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS user_nicknames (
                 user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id),
-                nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 24),
+                nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 288),
                 updated_at INTEGER NOT NULL
             ) STRICT",
         )
         .execute(&self.db_pool)
         .await?;
+        // Tables from before emoji sequences capped code points at 24: copy them into
+        // the wider ones. Nothing references these tables.
+        let old: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_schema WHERE type = 'table'
+             AND name IN ('lobby_nicknames', 'user_nicknames') AND sql LIKE '%BETWEEN 1 AND 24)%'",
+        )
+        .fetch_one(&self.db_pool)
+        .await?;
+        if old > 0 {
+            let mut tx = self.db_pool.begin().await?;
+            for statement in [
+                "CREATE TABLE lobby_nicknames_wide (
+                    lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 288),
+                    folded TEXT NOT NULL,
+                    PRIMARY KEY(lobby_id, user_id),
+                    UNIQUE(lobby_id, folded)
+                ) STRICT",
+                "INSERT INTO lobby_nicknames_wide (lobby_id, user_id, nickname, folded)
+                    SELECT lobby_id, user_id, nickname, folded FROM lobby_nicknames",
+                "DROP TABLE lobby_nicknames",
+                "ALTER TABLE lobby_nicknames_wide RENAME TO lobby_nicknames",
+                "CREATE TABLE user_nicknames_wide (
+                    user_id INTEGER PRIMARY KEY NOT NULL REFERENCES users(id),
+                    nickname TEXT NOT NULL CHECK(length(nickname) BETWEEN 1 AND 288),
+                    updated_at INTEGER NOT NULL
+                ) STRICT",
+                "INSERT INTO user_nicknames_wide (user_id, nickname, updated_at)
+                    SELECT user_id, nickname, updated_at FROM user_nicknames",
+                "DROP TABLE user_nicknames",
+                "ALTER TABLE user_nicknames_wide RENAME TO user_nicknames",
+            ] {
+                sqlx::query(statement).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+        }
         Ok(())
     }
 
@@ -240,6 +330,54 @@ mod tests {
             normalize("<svg onload=alert(1)>").as_deref(),
             Some("<svg onload=alert(1)>")
         );
+    }
+
+    #[test]
+    fn emoji_sequences_count_as_one_character() {
+        let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+        let rainbow = "🏳\u{FE0F}\u{200D}🌈";
+        let toned = "👩🏽\u{200D}👩🏽\u{200D}👧🏽\u{200D}👦🏽";
+        for name in [
+            family.to_owned(),
+            rainbow.to_owned(),
+            format!("{rainbow} Kat"),
+            "Kat ❤\u{FE0F}".to_owned(),
+            "🇺🇸🇯🇵".to_owned(),
+            "1\u{FE0F}\u{20E3} Ünïcødé ✓".to_owned(),
+            family.repeat(24),
+            toned.repeat(24),
+        ] {
+            assert_eq!(normalize(&name).as_deref(), Some(name.as_str()), "{name:?}");
+        }
+        assert_eq!(length(&family.repeat(7)), 7);
+        assert_eq!(normalize(&family.repeat(25)), None);
+        assert_eq!(normalize(&"x".repeat(24)).map(|n| length(&n)), Some(24));
+        for bad in [
+            "\u{200B}",                // lone zero-width space
+            "Ann\u{200B}ie",           // zero-width space inside a name
+            "Ann\u{200D}",             // trailing joiner, invisible
+            "A\u{200D}nn",             // joiner between letters
+            "\u{200D}👩",              // leading joiner
+            "Kat\u{FE0F}",             // selector after a letter, invisible
+            "rtl\u{202E}x",            // bidi override
+            "iso\u{2066}late\u{2069}", // bidi isolates
+            "a\u{0007}b",
+        ] {
+            assert_eq!(normalize(bad), None, "{bad:?}");
+        }
+        // Stacked combining marks are capped per character.
+        assert_eq!(normalize(&format!("e{}", "\u{0301}".repeat(12))), None);
+        assert!(normalize(&format!("e{}", "\u{0301}".repeat(3))).is_some());
+    }
+
+    #[test]
+    fn suffix_keeps_emoji_whole() {
+        let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
+        let name = candidate(&family.repeat(24), 2);
+        assert_eq!(length(&name), 24);
+        assert!(name.starts_with(&family.repeat(22)));
+        assert!(name.ends_with(" 2"));
+        assert!(normalize(&name).is_some());
     }
 
     #[test]

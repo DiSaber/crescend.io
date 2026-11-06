@@ -11,6 +11,9 @@ pub enum LobbyError {
     GoogleAccountRequired,
     InvalidNickname,
     MembershipForbidden,
+    /// Only the host can do this.
+    HostRequired,
+    CannotRemoveHost,
     AlreadyInLobby,
     InvalidRequest,
     InvalidJoinCode,
@@ -31,6 +34,17 @@ pub(crate) struct BoundStreamState {
     pub revision: i64,
     pub closed_at: Option<DateTime<Utc>>,
     pub member_exists: bool,
+    /// The host removed this membership (`remove_member`).
+    pub removed: bool,
+}
+
+/// What `remove_member` did.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Removal {
+    /// The member is gone; the lobby moved to this revision.
+    Removed(LobbyId, i64),
+    /// They had already left: nothing changed.
+    Absent,
 }
 
 impl Database {
@@ -105,28 +119,134 @@ impl Database {
                 .execute(&mut *tx)
                 .await?;
         } else {
-            sqlx::query("DELETE FROM lobby_memberships WHERE id = ? AND user_id = ?")
-                .bind(membership_id)
-                .bind(user_id)
-                .execute(&mut *tx)
-                .await?;
-            super::queue::reevaluate(&mut tx, lobby_id.as_str()).await?;
-            super::game::settle_after_leave(&mut tx, lobby_id.as_str(), clock())
-                .await
-                .map_err(|error| match error {
-                    crate::game::GameError::Database(error) => LobbyError::from(error),
-                    _ => LobbyError::Unavailable,
-                })?;
-            sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
-                .bind(revision)
-                .bind(lobby_id.as_str())
-                .execute(&mut *tx)
-                .await?;
+            depart(
+                &mut tx,
+                lobby_id.as_str(),
+                membership_id,
+                user_id,
+                revision,
+                clock(),
+            )
+            .await?;
         }
         tx.commit().await?;
         #[cfg(test)]
         super::queue::record_commit(lobby_id.as_str(), revision);
         Ok(Some((lobby_id, revision)))
+    }
+
+    /// The host removes another member, typically a "ghost" who closed their browser
+    /// without leaving. It works like that member leaving (votes stop counting, points
+    /// stay and show as left, a game phase waiting on them can close) and their open
+    /// streams end with reason `removed`. They can rejoin with the code.
+    pub(crate) async fn remove_member(
+        &self,
+        host: i64,
+        host_membership: &str,
+        target: i64,
+        clock: impl Fn() -> i64,
+    ) -> Result<Removal, LobbyError> {
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = timestamp(clock())?;
+        let account: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)")
+            .bind(host)
+            .fetch_one(&mut *tx)
+            .await?;
+        if !account {
+            return Err(LobbyError::Unauthorized);
+        }
+        let lobby: Option<(LobbyId, i64, i64)> = sqlx::query_as("SELECT l.id, l.owner_user_id, l.revision FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id WHERE m.id = ? AND m.user_id = ? AND l.closed_at IS NULL AND l.expires_at > ?")
+            .bind(host_membership).bind(host).bind(now).fetch_optional(&mut *tx).await?;
+        let (lobby_id, owner, revision) = lobby.ok_or(LobbyError::MembershipForbidden)?;
+        if owner != host {
+            return Err(LobbyError::HostRequired);
+        }
+        if target == host {
+            return Err(LobbyError::CannotRemoveHost);
+        }
+        let membership: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM lobby_memberships WHERE lobby_id = ? AND user_id = ?",
+        )
+        .bind(lobby_id.as_str())
+        .bind(target)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(membership) = membership else {
+            tx.commit().await?;
+            return Ok(Removal::Absent);
+        };
+        let revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
+        sqlx::query("INSERT INTO lobby_removals (membership_id, lobby_id) VALUES (?, ?)")
+            .bind(&membership)
+            .bind(lobby_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+        depart(
+            &mut tx,
+            lobby_id.as_str(),
+            &membership,
+            target,
+            revision,
+            clock(),
+        )
+        .await?;
+        tx.commit().await?;
+        #[cfg(test)]
+        super::queue::record_commit(lobby_id.as_str(), revision);
+        Ok(Removal::Removed(lobby_id, revision))
+    }
+
+    /// Someone's minute away ran out (or they came back): recount the skip majority
+    /// and let a game phase that now has everyone's input close. Returns the new
+    /// revision so the caller can notify, or None when the lobby is gone.
+    pub(crate) async fn settle_presence(
+        &self,
+        lobby: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<Option<i64>, LobbyError> {
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let now = timestamp(clock())?;
+        let revision: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM lobbies WHERE id = ? AND closed_at IS NULL AND expires_at > ?",
+        )
+        .bind(lobby)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(revision) = revision else {
+            return Ok(None);
+        };
+        let revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
+        super::queue::reevaluate(&mut tx, lobby).await?;
+        super::game::settle_after_leave(&mut tx, lobby, clock())
+            .await
+            .map_err(game_error)?;
+        sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+            .bind(revision)
+            .bind(lobby)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        #[cfg(test)]
+        super::queue::record_commit(lobby, revision);
+        Ok(Some(revision))
+    }
+
+    /// Whether an active lobby has this (normalized) code. Guest sign-in checks it so a
+    /// wrong code never creates an account.
+    pub(crate) async fn lobby_code_active(
+        &self,
+        code: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<bool, LobbyError> {
+        let now = timestamp(clock())?;
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM lobbies WHERE join_code = ? AND closed_at IS NULL AND expires_at > ?)",
+        )
+        .bind(code)
+        .bind(now)
+        .fetch_one(&self.db_pool)
+        .await?)
     }
 
     pub(crate) async fn bound_stream_state(
@@ -137,8 +257,8 @@ impl Database {
     ) -> Result<Option<BoundStreamState>, LobbyError> {
         // Keep closure and generation existence in one snapshot. Closure removes
         // memberships, but the retained lobby supplies the terminal reason.
-        Ok(sqlx::query_as("SELECT l.revision, l.closed_at, EXISTS(SELECT 1 FROM lobby_memberships m JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ? AND m.lobby_id = l.id) AS member_exists FROM lobbies l WHERE l.id = ?")
-            .bind(membership_id).bind(user_id).bind(lobby_id.as_str())
+        Ok(sqlx::query_as("SELECT l.revision, l.closed_at, EXISTS(SELECT 1 FROM lobby_memberships m JOIN users u ON u.id = m.user_id WHERE m.id = ? AND m.user_id = ? AND m.lobby_id = l.id) AS member_exists, EXISTS(SELECT 1 FROM lobby_removals r WHERE r.membership_id = ?) AS removed FROM lobbies l WHERE l.id = ?")
+            .bind(membership_id).bind(user_id).bind(membership_id).bind(lobby_id.as_str())
             .fetch_optional(&self.db_pool).await?)
     }
 
@@ -288,6 +408,12 @@ impl Database {
                 .fetch_optional(&mut *tx)
                 .await?;
         let mut departed = None;
+        // The host opening their own join link (a second tab, say) is never renamed:
+        // the join page tells them they are hosting instead.
+        let hosting_here = existing
+            .as_ref()
+            .is_some_and(|(_, target)| *target == lobby_id && owner == user_id);
+        let nickname = if hosting_here { None } else { nickname };
         let existing = if let Some((id, target)) = existing {
             if target == lobby_id {
                 Some(id)
@@ -311,6 +437,7 @@ impl Database {
                     .bind(target.as_str())
                     .execute(&mut *tx)
                     .await?;
+                crate::lobbies::presence::forget(target.as_str(), user_id);
                 departed = Some((target, old_revision));
                 None
             }
@@ -352,6 +479,7 @@ impl Database {
                 }
             }
             let id = allocated.ok_or(LobbyError::Unavailable)?;
+            crate::lobbies::presence::forget(lobby_id.as_str(), user_id);
             super::queue::reevaluate(&mut tx, lobby_id.as_str()).await?;
             revision = revision.checked_add(1).ok_or(LobbyError::Unavailable)?;
             sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
@@ -407,6 +535,15 @@ impl Database {
                 joined_at TEXT NOT NULL CHECK(length(joined_at) = 25 AND strftime('%Y-%m-%dT%H:%M:%S+00:00', joined_at) IS joined_at)
             ) STRICT",
         ).execute(&mut *tx).await?;
+        // Memberships the host removed, so their streams can say why they ended.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS lobby_removals (
+                membership_id TEXT PRIMARY KEY NOT NULL CHECK(length(membership_id) = 32),
+                lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE
+            ) STRICT",
+        )
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS lobbies_expiry ON lobbies(expires_at)")
             .execute(&mut *tx)
             .await?;
@@ -559,6 +696,42 @@ impl Database {
             return Ok(view);
         }
         Err(LobbyError::Unavailable)
+    }
+}
+
+/// Ends one ordinary (non-host) membership inside the caller's writer transaction:
+/// the queue recounts votes, a game phase waiting on them can close, and the lobby
+/// moves to `revision`.
+async fn depart(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    lobby: &str,
+    membership: &str,
+    user: i64,
+    revision: i64,
+    now: i64,
+) -> Result<(), LobbyError> {
+    sqlx::query("DELETE FROM lobby_memberships WHERE id = ? AND user_id = ?")
+        .bind(membership)
+        .bind(user)
+        .execute(&mut **tx)
+        .await?;
+    crate::lobbies::presence::forget(lobby, user);
+    super::queue::reevaluate(tx, lobby).await?;
+    super::game::settle_after_leave(tx, lobby, now)
+        .await
+        .map_err(game_error)?;
+    sqlx::query("UPDATE lobbies SET revision = ? WHERE id = ?")
+        .bind(revision)
+        .bind(lobby)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+fn game_error(error: crate::game::GameError) -> LobbyError {
+    match error {
+        crate::game::GameError::Database(error) => LobbyError::from(error),
+        _ => LobbyError::Unavailable,
     }
 }
 

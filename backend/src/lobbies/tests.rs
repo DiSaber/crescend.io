@@ -15,6 +15,7 @@ use std::{
 };
 
 mod guest_join;
+mod identity;
 mod us1_http;
 mod us1_storage;
 mod us2_http;
