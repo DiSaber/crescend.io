@@ -1,6 +1,6 @@
 # Game modes: plan and contract
 
-Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G5 built 2026-11-05 (board view at `/lobby/tv/`); G6 not started.
+Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G5 built 2026-11-05 (board view at `/lobby/tv/`). G6 (hardening, lifecycle and load tests, TV polish, accessibility, phone checks) built 2026-11-06.
 
 ## Goal
 
@@ -223,6 +223,44 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
     ('party', 'speed_round', 'duel', 'picture_this', 'name_that_tune')
   GROUP BY definition_hash ORDER BY hosts DESC, starts DESC LIMIT 20;
   ```
+
+## Hardening (G6)
+
+- **A guest leaving settles the game** in the same commit as the leave. If everyone
+  still in the lobby has picked, voted or guessed, the phase closes now instead of at
+  its timer, so a round never stalls on players who left. Departed players keep
+  their picks and stay on the scoreboard (marked inactive) when they scored.
+- **The host leaving** closes the lobby and deletes the game with it; guests get
+  `403 membership_forbidden` on every game route and the ticker has nothing to run.
+- **Lobby expiry mid-round** freezes the game: from the expiry instant reads, writes
+  and the ticker all stop, and the cleanup sweep deletes it.
+- **Deadlines are exclusive.** An action at exactly `phase_ends_at` is refused
+  (`game_phase_closed`, or `game_phase_changed` for a skip) and its catch-up rolls
+  back with it; the ticker (every second) publishes the change. A host skip racing
+  the timer therefore never skips two phases.
+- **A stalled ticker** catches up in one commit per lobby, but each phase it enters
+  gets a full timer from the moment it wakes, so a reveal still shows for its
+  `reveal_seconds` instead of flashing past.
+- **Double starts**: concurrent starts serialize; exactly one wins and the rest get
+  `409 game_running`.
+- **Load**: twenty players picking, reading and voting at once over HTTP all succeed,
+  every commit bumps the revision exactly once, and every vote counts once. SQLite's
+  busy and pool waits are 5 s (were 1 s): twenty serialized writes in one second can
+  take longer than a second on a slow host, and a 1 s wait answered some players 503.
+- **Known limit**: guest sign-in allows 20 new guest accounts per address per hour
+  ([guest join](guest-join.md#abuse-limits)). A party of more than 20 new guests on
+  one Wi-Fi shares one address, so the 21st new guest waits (returning guests and
+  Google users are not limited).
+- **TV board**: the root font scales with the screen (16 px at 1280x720, 24 px at
+  1080p, 48 px at 4K) and the board fills exactly one screen. The prompt image takes
+  the height left over, and sits beside the prompt text while voting; 7+ ballot songs
+  use compact cards and 13+ use four columns; 9+ players use compact scoreboard rows
+  and 13+ two columns. Checked with 20 players at 720p, 1080p and 4K.
+- **Accessibility**: one polite live region per game view announces each phase, the
+  answer and round winners; countdowns are labelled timers that announce 30, 10 and
+  5 seconds left and time up; every control shows a focus ring; secondary text uses
+  zinc-400 (about 7:1 on the cards); the lobby and board have a `main` landmark and an
+  `h1`. axe reports no violations on the lobby, setup, each phase and the board.
 
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { QueueSession } from '../../app/lib/queue-state.ts';
-import { fixture, entry, queue, current } from './support.ts';
+import { fixture, entry, queue, current, deferred } from './support.ts';
 
 test('vote snapshots reflect own vote and never invent a voter roster', async () => {
   const f = fixture(); f.deps.identity = async () => '2';
@@ -35,4 +35,20 @@ test('invalid fixed thresholds are rejected before a request', async () => {
   const s = new QueueSession(f.deps); s.start(); await s.sync();
   for (const count of [0, -1, 1.5, NaN, 2147483648]) await assert.rejects(s.policy({ mode: 'fixed', count }));
   assert.equal(calls, 0); s.stop();
+});
+test('host leave counts as leaving even when the close event beats the DELETE response', async () => {
+  const f = fixture(); const gate = deferred<void>();
+  let push: ((event: never) => void) | undefined;
+  f.deps.events = async (_m, signal, on) => new Promise<void>(resolve => {
+    push = on as never; signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+  f.deps.leave = async () => gate.promise;
+  const s = new QueueSession(f.deps); s.start(); await s.sync();
+  const left = s.leave();
+  f.deps.current = async () => ({ membership_id: null, lobby: null });
+  push!({ event: 'membership_ended', data: { reason: 'closed' } } as never);
+  gate.resolve();
+  assert.equal(await left, true);
+  assert.equal(s.getSnapshot().ended, 'You left the session.');
+  assert.equal(s.getSnapshot().busy, null); s.stop();
 });

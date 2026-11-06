@@ -70,7 +70,9 @@ advance body without exactly one of `phase_seq`/`play_seq`; `413 request_too_lar
 and `415 unsupported_media_type` match the queue. Host-only routes return
 `403 host_required`; ended or foreign generations `403 membership_forbidden`.
 `400 invalid_game_settings` is a settings override outside the mode's served
-schema (unknown key, wrong type, out of range or off the step grid);
+schema (unknown key, wrong type, out of range or off the step grid). Its body adds
+`setting` (the rejected key) and `detail` (a reason to show next to that field, such
+as `"must be between 0 and 50"`);
 `400 invalid_game_rules` a rule combination the engine cannot run.
 `404 game_mode_unavailable` is an unknown mode; `404 game_submission_unavailable`
 a vote target that is not on the current ballot. Conflicts (all 409): `game_running`

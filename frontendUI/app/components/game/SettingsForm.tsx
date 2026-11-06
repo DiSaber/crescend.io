@@ -28,10 +28,13 @@ export function parseDraft(schema: SettingSchema[], draft: Draft) {
 const unitShort = (unit: string | null) => unit === "seconds" ? "s" : unit ?? "";
 
 /** The customize form, generated from a mode's served settings schema. */
-export default function SettingsForm({ schema, draft, onChange, disabled }: {
+export default function SettingsForm({ schema, draft, onChange, disabled, serverErrors }: {
   schema: SettingSchema[]; draft: Draft; onChange: (draft: Draft) => void; disabled?: boolean;
+  /** Per-key messages from the server's last rejection; local checks win when both apply. */
+  serverErrors?: Record<string, string>;
 }) {
-  const { errors } = parseDraft(schema, draft);
+  const { errors: local } = parseDraft(schema, draft);
+  const errors = { ...serverErrors, ...local };
   const set = (key: string, value: string | boolean) => onChange({ ...draft, [key]: value });
   return (
     <fieldset className="flex flex-col gap-3" disabled={disabled}>
@@ -40,10 +43,14 @@ export default function SettingsForm({ schema, draft, onChange, disabled }: {
         const id = `setting-${spec.key}`;
         if (spec.type === "boolean") {
           return (
-            <label key={spec.key} htmlFor={id} className="flex min-h-11 items-center gap-3 rounded-lg bg-zinc-800 px-3 py-2 cursor-pointer">
-              <input id={id} type="checkbox" checked={draft[spec.key] === true} onChange={e => set(spec.key, e.target.checked)} className="size-5 accent-[#FF0048]" />
-              <span className="text-sm">{spec.label}</span>
-            </label>
+            <div key={spec.key} className={`rounded-lg bg-zinc-800 ${errors[spec.key] ? "ring-1 ring-red-500" : ""}`}>
+              <label htmlFor={id} className="flex min-h-11 items-center gap-3 px-3 py-2 cursor-pointer">
+                <input id={id} type="checkbox" checked={draft[spec.key] === true} onChange={e => set(spec.key, e.target.checked)}
+                  aria-invalid={!!errors[spec.key]} aria-describedby={errors[spec.key] ? `${id}-hint` : undefined} className="size-5 accent-[#FF0048]" />
+                <span className="text-sm">{spec.label}</span>
+              </label>
+              {errors[spec.key] && <p id={`${id}-hint`} className="px-3 pb-2 text-xs text-red-400">{errors[spec.key]}</p>}
+            </div>
           );
         }
         const raw = String(draft[spec.key] ?? "");
@@ -73,7 +80,7 @@ export default function SettingsForm({ schema, draft, onChange, disabled }: {
               <button type="button" onClick={() => nudge(1)} aria-label={`More: ${spec.label}`} disabled={Number.isFinite(n) && n >= max} className="min-h-11 min-w-11 rounded-lg bg-zinc-700 text-lg disabled:opacity-40">+</button>
               <span className="text-sm text-zinc-400">{unitShort(spec.unit)}</span>
             </div>
-            <p id={`${id}-hint`} className={`mt-1 text-xs ${error ? "text-red-400" : "text-zinc-500"}`}>
+            <p id={`${id}-hint`} className={`mt-1 text-xs ${error ? "text-red-400" : "text-zinc-400"}`}>
               {error ?? `${min}–${max}${unitShort(spec.unit) === "s" ? " s" : ""}${step > 1 ? `, steps of ${step}` : ""}`}
             </p>
           </div>
