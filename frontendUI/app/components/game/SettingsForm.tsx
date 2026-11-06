@@ -1,6 +1,6 @@
 "use client";
 
-import { settingError, type SettingSchema, type SettingValues } from "../../lib/game";
+import { nudgeValue, settingError, type SettingSchema, type SettingValues } from "../../lib/game";
 
 /** Raw text for integer fields so hosts can type freely; parsed on every change. */
 export type Draft = Record<string, string | boolean>;
@@ -56,12 +56,8 @@ export default function SettingsForm({ schema, draft, onChange, disabled, server
         const raw = String(draft[spec.key] ?? "");
         const n = Number(raw);
         const step = spec.step ?? 1, min = spec.min ?? 0, max = spec.max ?? Number.MAX_SAFE_INTEGER;
-        const nudge = (dir: 1 | -1) => {
-          const base = Number.isFinite(n) ? n : min;
-          // Snap to the step grid, then clamp.
-          const snapped = min + Math.round((base - min) / step) * step;
-          set(spec.key, String(Math.min(max, Math.max(min, snapped === base ? base + dir * step : snapped))));
-        };
+        // One step in the pressed direction, landing on the step grid.
+        const nudge = (dir: 1 | -1) => set(spec.key, String(nudgeValue(spec, raw, dir)));
         const error = errors[spec.key];
         return (
           <div key={spec.key} className="rounded-lg bg-zinc-800 px-3 py-2">
