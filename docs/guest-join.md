@@ -88,9 +88,10 @@ reads the marker.
 
 ## Abuse limits
 
-- **New guest accounts per client address**: at most 20 per sliding hour, kept in
+- **New guest accounts per client address**: at most 200 per sliding hour (high enough for a
+  class or party sharing one public address, such as campus Wi-Fi), kept in
   memory (`auth::guest::GuestLimiter`, forgotten on restart, which is fine for a
-  nuisance limit). The 21st gets **429 `too_many_guests`** with `Retry-After`. Only
+  nuisance limit). The 201st gets **429 `too_many_guests`** with `Retry-After`. Only
   account creation counts. A browser restoring its guest account, refresh and Google
   login are not limited. IPv6 clients share one bucket per /64, because one household
   usually owns a whole /64.
