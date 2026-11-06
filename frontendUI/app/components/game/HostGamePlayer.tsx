@@ -39,7 +39,7 @@ function Occurrence({ session, now, secret, offset }: { session: QueueSession; n
   return (
     <>
       <p className="font-semibold line-clamp-2 mb-1">{secret ? "Playing the mystery song" : `Now playing: ${now.song!.title}`}</p>
-      <p className="text-xs text-zinc-400 mb-3">Game song{now.ends_at ? " · clip" : " · full song"}</p>
+      <p className="text-xs text-zinc-400 mb-3">Game song · plays on this device</p>
       <YouTubePlayer
         videoId={now.song!.video_id}
         occurrence={String(now.play_seq)}

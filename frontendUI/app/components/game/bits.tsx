@@ -1,4 +1,6 @@
 "use client";
+// Thumbnails come from YouTube and prompt images are blob URLs: the static export has no image optimizer.
+/* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { fetchImage, type GameView, type Phase } from "../../lib/game";

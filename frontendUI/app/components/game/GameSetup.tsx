@@ -41,7 +41,7 @@ export default function GameSetup({ session, state, onClose }: {
     }
   }
 
-  const presets = (modes ?? []).filter(m => m.preset && m.rules.prompt === "none" && m.rules.collect === "pick");
+  const presets = (modes ?? []).filter(m => m.preset && m.rules.prompt === "none");
 
   return (
     <section aria-label="Start a game" className="w-full max-w-4xl bg-zinc-900 p-4 sm:p-6 rounded-xl border border-[#5C172E] flex flex-col gap-4">
@@ -71,6 +71,16 @@ export default function GameSetup({ session, state, onClose }: {
             <h3 className="text-lg font-bold">Customize {selected.name}</h3>
             <button type="button" onClick={() => setDraft(draftFrom(selected.settings))} className="min-h-11 px-2 text-sm text-zinc-400 underline hover:text-white">Reset</button>
           </div>
+          {selected.rules.challenge === "guess_title" && (
+            <div className="rounded-lg bg-amber-950/60 border border-amber-800 p-3 text-sm text-amber-200">
+              <p>
+                This device plays each clip in a normal YouTube player, and the player shows the title. Keep this screen out of
+                the players&apos; sight (a laptop or phone by the speaker works) and put the board view on the TV instead.
+                Phones only get the guess box.
+              </p>
+              <a href="/lobby/tv/" target="_blank" rel="noopener" className="inline-flex min-h-11 items-center font-semibold underline">Open the board view ↗</a>
+            </div>
+          )}
           <SettingsForm schema={selected.settings} draft={draft} onChange={setDraft} disabled={!!busy} />
           {parsed && !parsed.valid && <p className="text-sm text-red-400" role="status">Fix the highlighted settings to start.</p>}
         </div>

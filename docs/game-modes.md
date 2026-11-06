@@ -1,6 +1,6 @@
 # Game modes: plan and contract
 
-Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G2 built 2026-11-05; G6 not started.
+Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G3 built 2026-11-05 (board view at `/lobby/tv/`); G6 not started.
 
 ## Goal
 

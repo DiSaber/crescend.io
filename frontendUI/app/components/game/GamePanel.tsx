@@ -171,7 +171,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
 
         {game.phase === "reveal" && game.last_result && <Reveal result={game.last_result} name={name} me={me} />}
 
-        {playing && game.phase !== "reveal" && (
+        {playing && game.phase !== "reveal" && game.phase !== "guess" && (
           <div>
             <p className="text-xs text-zinc-400 mb-1">Now playing{game.up_next_count > 0 && ` · ${game.up_next_count} more decided`}</p>
             <SongRow song={playing.song!} note={`picked by ${name(playing.submitted_by_user_id)}`} />

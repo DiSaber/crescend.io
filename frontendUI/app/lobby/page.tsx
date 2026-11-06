@@ -138,6 +138,7 @@ function Lobby() {
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-500"}`}>{live ? "● live" : "○ connecting"}</p>
+          <a href="/lobby/tv/" target="_blank" rel="noopener" className="mt-1 inline-flex min-h-11 items-center text-sm text-zinc-300 underline hover:text-white">Board view for a TV ↗</a>
           {isHost && (
             <div className="mt-4 flex flex-col items-center gap-2">
               {/* White border is the quiet zone phone cameras need to read the code. */}
