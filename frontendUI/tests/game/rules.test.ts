@@ -49,7 +49,7 @@ test('Duel results group by pair and say which song beat which', () => {
   };
   const groups = resultGroups(result);
   assert.equal(groups.length, 3);
-  assert.equal(pairSummary(groups[0]), '“Song a” beat “Song b” 2-1');
+  assert.equal(pairSummary(groups[0]), '2-1: “Song a” beat “Song b”');
   assert.match(pairSummary(groups[1]), /^Tie 0-0, no points: “Song c” plays/);
   assert.match(pairSummary(groups[2]), /^Bye: “Song e”/);
 });

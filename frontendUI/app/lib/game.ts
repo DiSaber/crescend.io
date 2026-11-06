@@ -302,12 +302,12 @@ export function pickErrorMessage(error: unknown): string | null {
   return null;
 }
 
-/** "“A” beat “B” 2-1", "Tie 1-1, no points: “A” plays", "Bye: “A” plays unopposed". */
+/** "2-1: “A” beat “B”" (score first, so a cut-off line keeps it), "Tie 1-1, no points: “A” plays", "Bye: “A” plays unopposed". */
 export function pairSummary(group: ResultEntry[]) {
   const [a, b] = group;
   if (!b || a.outcome === "bye") return `Bye: “${a.song.title}” plays unopposed`;
   const winner = group.find(e => e.winner) ?? a;
   const other = group.find(e => e !== winner) ?? b;
   if (winner.outcome === "tie") return `Tie ${winner.votes}-${other.votes}, no points: “${winner.song.title}” plays (picked first)`;
-  return `“${winner.song.title}” beat “${other.song.title}” ${winner.votes}-${other.votes}`;
+  return `${winner.votes}-${other.votes}: “${winner.song.title}” beat “${other.song.title}”`;
 }
