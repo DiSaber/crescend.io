@@ -85,6 +85,8 @@ function JoinSession({ initialCode }: { initialCode: string }) {
 
   function join(e: FormEvent) {
     e.preventDefault();
+    // Every new action starts clean: an earlier refusal no longer applies.
+    setError(undefined);
     if (!check()) return;
     void run(async () => {
       if (!me) await guestSignIn(code);
@@ -93,6 +95,7 @@ function JoinSession({ initialCode }: { initialCode: string }) {
   }
 
   function joinAsGuest() {
+    setError(undefined);
     if (!check()) return;
     if (hostingOther && !window.confirm(
       `You're hosting session ${hostingOther.join_code}. Joining as a guest signs this browser out of Google. ` +
@@ -165,7 +168,7 @@ function JoinSession({ initialCode }: { initialCode: string }) {
             type="text"
             name="nickname"
             value={nickname}
-            onChange={(e) => { touched.current = true; setNickname(e.target.value); }}
+            onChange={(e) => { touched.current = true; setNickname(e.target.value); setError(undefined); }}
             placeholder="What should everyone call you?"
             maxLength={NICKNAME_MAX * 12}
             autoComplete="nickname"
@@ -194,7 +197,7 @@ function JoinSession({ initialCode }: { initialCode: string }) {
             ? "You're signed in with Google. Joining as a guest signs this browser out of Google first."
             : me?.guest
               ? "You're joining as this browser's guest."
-              : <>No account needed. Have one? <button type="button" onClick={() => login(returnTo)} className="inline-flex min-h-11 items-center underline hover:text-zinc-300">Sign in with Google</button></>}
+              : <>No account needed. Have one? <button type="button" onClick={() => { setError(undefined); login(returnTo); }} className="inline-flex min-h-11 items-center underline hover:text-zinc-300">Sign in with Google</button></>}
         </p>
       </div>
     </form>

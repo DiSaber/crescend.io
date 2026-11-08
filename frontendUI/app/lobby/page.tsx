@@ -51,6 +51,9 @@ function JukeboxPlayer({ entry, disabled, onEnded, onSkipError }: {
   );
 }
 
+/** "1 guest", "2 guests", "0 guests". */
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
 function Lobby() {
   const router = useRouter();
   const [session] = useState(() => new QueueSession());
@@ -81,11 +84,14 @@ function Lobby() {
 
   async function leave() {
     if (session.isHost()) {
-      const people = (membership?.lobby?.members.length ?? 1) - 1;
+      const people = Math.max(0, (membership?.lobby?.members.length ?? 1) - 1);
       const others = people === 1 ? "the 1 other person" : `all ${people} other people`;
-      const warning = state.game?.game?.status === "running"
-        ? `A game is in progress. Ending the session stops the game for everyone and sends ${others} out. The code stops working. End the session for everyone?`
-        : `End the session for everyone? This sends ${others} out and the code stops working.`;
+      const running = state.game?.game?.status === "running";
+      const warning = people === 0
+        ? (running ? "A game is in progress. Ending the session stops it. " : "") + "End the session? The code stops working."
+        : running
+          ? `A game is in progress. Ending the session stops the game for everyone and sends ${others} out. The code stops working. End the session for everyone?`
+          : `End the session for everyone? This sends ${others} out and the code stops working.`;
       if (!window.confirm(warning)) return;
     }
     if (await session.leave()) router.push("/");
@@ -170,7 +176,7 @@ function Lobby() {
     entry.submitted_by_user_id === userId ? "you" : entry.submitted_by_nickname;
 
   const voteLabel = (entry: QueueEntry) =>
-    threshold === null ? `${entry.active_vote_count} skip votes` : `${entry.active_vote_count}/${threshold} to skip`;
+    threshold === null ? plural(entry.active_vote_count, "skip vote") : `${entry.active_vote_count}/${threshold} to skip`;
 
   const entryControls = (entry: QueueEntry, index?: number) => {
     return (
@@ -234,14 +240,16 @@ function Lobby() {
           <button type="button" onClick={() => setNotice(null)} className="min-h-11 min-w-11 shrink-0 underline">OK</button>
         </div>
       )}
-      <div className="flex flex-col md:flex-row gap-6 items-center md:items-start w-full max-w-4xl">
+      {/* While a game runs, phones show the game right under the code: the row
+          dissolves into the page column and the people list and QR move below it. */}
+      <div className={`${gameRunning ? "contents md:flex" : "flex"} flex-col md:flex-row gap-6 items-center md:items-start w-full max-w-4xl`}>
         <div className="bg-zinc-900 p-6 rounded-xl border border-zinc-800 text-center">
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-400"}`}>{live ? "● live" : "○ connecting"}</p>
           <a href="/lobby/tv/" target="_blank" rel="noopener" className="mt-1 inline-flex min-h-11 items-center text-sm text-zinc-300 underline hover:text-white">Board view for a TV ↗</a>
           {isHost && (
-            <div className="mt-4 flex flex-col items-center gap-2">
+            <div className={`mt-4 flex-col items-center gap-2 ${gameRunning ? "hidden md:flex" : "flex"}`}>
               {/* White border is the quiet zone phone cameras need to read the code. */}
               <QRCodeSVG
                 value={`${window.location.origin}/join/?code=${lobby.join_code}`}
@@ -255,7 +263,7 @@ function Lobby() {
           )}
         </div>
 
-        <div className="flex-1 bg-zinc-900 p-6 rounded-xl border border-zinc-800">
+        <div className={`flex-1 bg-zinc-900 p-6 rounded-xl border border-zinc-800 ${gameRunning ? "order-last md:order-none w-full md:w-auto" : ""}`}>
           <p className="text-zinc-400 text-sm mb-2">In this session ({lobby.members.length})</p>
           <ul className="flex flex-wrap gap-2">
             {lobby.members.map((m) => (
@@ -264,6 +272,7 @@ function Lobby() {
                   {m.nickname}
                   {m.role === "owner" && <span className="text-zinc-400"> · host</span>}
                   {m.user_id === userId && " (you)"}
+                  {isHost && m.away && <span className="ml-1 rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-300" title="Gone for over a minute: the game and skip votes aren't waiting for them">away</span>}
                 </span>
                 {isHost && m.role !== "owner" && (
                   <button
@@ -300,6 +309,12 @@ function Lobby() {
             )}
           </div>
         </div>
+        {isHost && gameRunning && (
+          <div className="order-last md:hidden bg-zinc-900 p-6 rounded-xl border border-zinc-800 flex flex-col items-center gap-2">
+            <QRCodeSVG value={`${window.location.origin}/join/?code=${lobby.join_code}`} size={176} marginSize={2} title="Scan to join this session" className="rounded-lg" />
+            <p className="text-xs text-zinc-400">Scan to join</p>
+          </div>
+        )}
       </div>
 
       {game && <GamePanel
@@ -318,7 +333,7 @@ function Lobby() {
         ))}
 
       {jukeboxPaused && <p className="w-full max-w-4xl text-sm text-zinc-400">
-        The jukebox is paused{gameRunning ? " during the game" : ""}{upcoming.length + (current ? 1 : 0) > 0 && ` with ${upcoming.length + (current ? 1 : 0)} song${upcoming.length + (current ? 1 : 0) === 1 ? "" : "s"} waiting`}.{" "}
+        The jukebox is paused{gameRunning ? " during the game" : ""}{upcoming.length + (current ? 1 : 0) > 0 && ` with ${plural(upcoming.length + (current ? 1 : 0), "song")} waiting`}.{" "}
         {gameRunning ? "It picks up where it left off when the game ends." : isHost ? "Press “Back to the jukebox” to pick up where it left off." : "It picks up when the host goes back to the jukebox."}
       </p>}
       {!gameRunning && <div className="w-full max-w-4xl">
@@ -442,7 +457,7 @@ function VotingPolicy({
       </select>
       {mode === "fixed" && <input aria-label="Required skip votes" type="number" min={1} max={2147483647} step={1} value={count} disabled={disabled} onChange={e => setCount(e.target.value)} className="min-h-11 w-24 rounded bg-zinc-800 border border-zinc-700 px-2" />}
       <button type="submit" disabled={disabled || (mode === "fixed" && !valid)} className="min-h-11 px-3 underline disabled:opacity-50">Apply policy</button>
-      <span className="text-zinc-400">{voting.active_guest_count} guests; {voting.effective_threshold === null ? "no removals without guests" : `${voting.effective_threshold} votes needed`}</span>
+      <span className="text-zinc-400">{plural(voting.active_guest_count, "guest")}; {voting.effective_threshold === null ? "no removals without guests" : `${plural(voting.effective_threshold, "vote")} needed`}</span>
     </form>
   );
 }

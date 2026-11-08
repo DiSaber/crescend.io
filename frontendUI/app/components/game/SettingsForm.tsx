@@ -46,7 +46,7 @@ export default function SettingsForm({ schema, draft, onChange, disabled, server
             <div key={spec.key} className={`rounded-lg bg-zinc-800 ${errors[spec.key] ? "ring-1 ring-red-500" : ""}`}>
               <label htmlFor={id} className="flex min-h-11 items-center gap-3 px-3 py-2 cursor-pointer">
                 <input id={id} type="checkbox" checked={draft[spec.key] === true} onChange={e => set(spec.key, e.target.checked)}
-                  aria-invalid={!!errors[spec.key]} aria-describedby={errors[spec.key] ? `${id}-hint` : undefined} className="size-5 accent-[#FF0048]" />
+                  aria-invalid={!!errors[spec.key]} aria-describedby={errors[spec.key] ? `${id}-hint` : undefined} className="size-11 shrink-0 sm:size-6 accent-[#FF0048] cursor-pointer" />
                 <span className="text-sm">{spec.label}</span>
               </label>
               {errors[spec.key] && <p id={`${id}-hint`} className="px-3 pb-2 text-xs text-red-400">{errors[spec.key]}</p>}
@@ -54,8 +54,11 @@ export default function SettingsForm({ schema, draft, onChange, disabled, server
           );
         }
         const raw = String(draft[spec.key] ?? "");
-        const n = Number(raw);
+        const n = /^\s*-?\d+\s*$/.test(raw) ? Number(raw) : NaN;
         const step = spec.step ?? 1, min = spec.min ?? 0, max = spec.max ?? Number.MAX_SAFE_INTEGER;
+        // Disabled only at the edge itself: out of range, both buttons bring it back inside.
+        const top = min + Math.floor((max - min) / step) * step;
+        const atBottom = n === min, atTop = n >= top && n <= max;
         // One step in the pressed direction, landing on the step grid.
         const nudge = (dir: 1 | -1) => set(spec.key, String(nudgeValue(spec, raw, dir)));
         const error = errors[spec.key];
@@ -63,7 +66,7 @@ export default function SettingsForm({ schema, draft, onChange, disabled, server
           <div key={spec.key} className="rounded-lg bg-zinc-800 px-3 py-2">
             <label htmlFor={id} className="block text-sm">{spec.label}</label>
             <div className="mt-1 flex items-center gap-2">
-              <button type="button" onClick={() => nudge(-1)} aria-label={`Less: ${spec.label}`} disabled={Number.isFinite(n) && n <= min} className="min-h-11 min-w-11 rounded-lg bg-zinc-700 text-lg disabled:opacity-40">−</button>
+              <button type="button" onClick={() => nudge(-1)} aria-label={`Less: ${spec.label}`} disabled={atBottom} className="min-h-11 min-w-11 rounded-lg bg-zinc-700 text-lg disabled:opacity-40">−</button>
               <input
                 id={id}
                 inputMode="numeric"
@@ -73,7 +76,7 @@ export default function SettingsForm({ schema, draft, onChange, disabled, server
                 aria-describedby={`${id}-hint`}
                 className={`min-h-11 w-20 min-w-0 rounded-lg bg-zinc-900 border px-2 text-center font-mono ${error ? "border-red-500" : "border-zinc-700"}`}
               />
-              <button type="button" onClick={() => nudge(1)} aria-label={`More: ${spec.label}`} disabled={Number.isFinite(n) && n >= max} className="min-h-11 min-w-11 rounded-lg bg-zinc-700 text-lg disabled:opacity-40">+</button>
+              <button type="button" onClick={() => nudge(1)} aria-label={`More: ${spec.label}`} disabled={atTop} className="min-h-11 min-w-11 rounded-lg bg-zinc-700 text-lg disabled:opacity-40">+</button>
               <span className="text-sm text-zinc-400">{unitShort(spec.unit)}</span>
             </div>
             <p id={`${id}-hint`} className={`mt-1 text-xs ${error ? "text-red-400" : "text-zinc-400"}`}>
