@@ -24,6 +24,27 @@ pub const DEFAULT_HOST: &str = "Host";
 /// Zero-width joiners and variation selectors are allowed only inside emoji
 /// sequences (family and flag emoji), where they draw one visible picture.
 pub fn normalize(raw: &str) -> Option<String> {
+    display_name(raw, MAX_CHARS).ok()
+}
+
+/// Why a display name (nickname or game mode name) is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameProblem {
+    /// A control, invisible or direction-changing character, or a joiner or
+    /// variation selector outside an emoji sequence.
+    Hidden,
+    /// Empty after trimming, or more than the allowed characters.
+    Length,
+    /// One character stacks more than [`MAX_SCALARS_PER_CHAR`] code points.
+    Stacked,
+}
+
+/// The display-name rules shared by nicknames and saved game mode names: trimmed,
+/// inner whitespace runs collapsed to one space, 1 to `max_chars` user-perceived
+/// characters (grapheme clusters, so a family emoji counts once), each at most
+/// [`MAX_SCALARS_PER_CHAR`] code points, and no hidden characters (see `forbidden`;
+/// ZWJ and variation selectors only inside emoji sequences).
+pub fn display_name(raw: &str, max_chars: usize) -> Result<String, NameProblem> {
     let chars: Vec<char> = raw.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
         let before = i.checked_sub(1).map(|j| chars[j]);
@@ -37,7 +58,7 @@ pub fn normalize(raw: &str) -> Option<String> {
             _ => !forbidden(c),
         };
         if !allowed {
-            return None;
+            return Err(NameProblem::Hidden);
         }
     }
     let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -45,10 +66,14 @@ pub fn normalize(raw: &str) -> Option<String> {
     for grapheme in name.graphemes(true) {
         count += 1;
         if grapheme.chars().count() > MAX_SCALARS_PER_CHAR {
-            return None;
+            return Err(NameProblem::Stacked);
         }
     }
-    (1..=MAX_CHARS).contains(&count).then_some(name)
+    if (1..=max_chars).contains(&count) {
+        Ok(name)
+    } else {
+        Err(NameProblem::Length)
+    }
 }
 
 /// Control characters (Cc), variation selectors outside emoji, and the zero-width and
