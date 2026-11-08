@@ -300,6 +300,9 @@ pub struct NowPlaying {
     /// Null plays the full song; the host reports its end.
     #[schema(value_type = Option<String>, format = DateTime)]
     pub ends_at: Option<DateTime<Utc>>,
+    /// In prompt modes, the prompt of the round this song won (`round`), which under
+    /// overlap can be earlier than the game's current round; null otherwise.
+    pub prompt: Option<PromptView>,
 }
 
 /// The caller's standing in the current Name That Tune round (guess and reveal).
