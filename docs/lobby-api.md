@@ -27,7 +27,7 @@ Success is **201 Created**, `Content-Type: application/json`, and `Cache-Control
     "expires_at": "2026-09-25T20:00:00Z",
     "revision": "1",
     "members": [
-      { "user_id": "42", "role": "owner", "nickname": "Daniel", "joined_at": "2026-09-24T20:00:00Z" }
+      { "user_id": "42", "role": "owner", "nickname": "Daniel", "joined_at": "2026-09-24T20:00:00Z", "away": false }
     ]
   }
 }
@@ -102,7 +102,7 @@ The server checks account, generation ownership and lobby activity before return
 | `membership_ended` | `{"reason":"removed"}` | Clear this generation and close; the host removed this member (they may rejoin) |
 | `auth_expired` | `{}` | Close and recover authentication through the existing coordinator |
 
-Events contain no roster, invitation code, or other account's generation. Comments keep an authorized connection alive every 15 seconds. An open stream also marks its account present: once an account has had no open stream for 60 seconds, the game stops waiting for it and the skip-vote majority stops counting it, until it reconnects (see [guest join](guest-join.md#removing-members-and-ghosts)). Expiration ends idle streams independently of database cleanup. Disconnecting does not change membership. One-second reconciliation recovers committed changes even if their post-commit notification was lost. Notifications are not a durable event log; `Last-Event-ID` does not replay history.
+Events contain no roster, invitation code, or other account's generation. Comments keep an authorized connection alive every 15 seconds. An open stream also marks its account present: once an account has had no open stream for 60 seconds, the game stops waiting for it and the skip-vote majority stops counting it, until it reconnects (see [guest join](guest-join.md#removing-members-and-ghosts)). Such a member has `members[].away: true` (never the host); the change bumps the revision, so rosters refetch. Expiration ends idle streams independently of database cleanup. Disconnecting does not change membership. One-second reconciliation recovers committed changes even if their post-commit notification was lost. Notifications are not a durable event log; `Last-Event-ID` does not replay history.
 
 This transport example parses UTF-8 and SSE framing across arbitrary chunks, including CRLF boundaries and multiple events in a chunk. `onEvent` should enqueue invalidations synchronously so it does not block reading the stream while fetching state. It is a client contract example, not a frontend application.
 
@@ -192,7 +192,7 @@ Disconnecting, closing a tab, or signing out does not leave or close a lobby (a 
 
 ## Remove a member
 
-The host sends an empty-body `DELETE /api/lobbies/memberships/{membership_id}/members/{user_id}`, where `membership_id` is the host's own current generation and `user_id` is the member's `members[].user_id`. **204 No Content**: the member is removed, or was already gone (no change, no notification). Removal works like that member leaving: their membership ends, the revision increments once, queue moderation is reevaluated (their skip votes stop counting), a game phase waiting only on them settles, and their game points stay with `active: false`. Their streams receive `membership_ended` with reason `removed`. They can rejoin with the code; the lobby keeps their name for them.
+The host sends an empty-body `DELETE /api/lobbies/memberships/{membership_id}/members/{user_id}`, where `membership_id` is the host's own current generation and `user_id` is the member's `members[].user_id`. **204 No Content**: the member is removed, or was already gone (no change, no notification). Removal works like that member leaving: their membership ends, the revision increments once, queue moderation is reevaluated (their skip votes stop counting), a game phase waiting only on them settles, and, if they scored, they stay on the game scoreboard with `active: false` (a departed member with 0 points is left off). Their streams receive `membership_ended` with reason `removed`. They can rejoin with the code; the lobby keeps their name for them.
 
 Errors: 400 `invalid_request` (malformed IDs or a body), 400 `cannot_remove_host` (the target is the host; end the session instead), 401, 403 `membership_forbidden` (not the caller's active generation), 403 `host_required` (the caller is not the host), 503 `temporarily_unavailable`. Closure records remain until scheduled expiry cleanup so connected clients can recover the correct terminal reason even if a wakeup is missed.
 
