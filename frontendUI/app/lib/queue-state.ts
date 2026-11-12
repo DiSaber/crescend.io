@@ -5,6 +5,7 @@ import {
   getQueue, submitEntry, advance, veto, vote, moveEntry, setVotingPolicy, newRequestId,
   QueueError, type AdvanceReason, type QueueView, type Mutation,
 } from "./queue.ts";
+import { getGame, type GameMutation, type GameSnapshot } from "./game.ts";
 
 export type Attempt = { url: string; request_id: string };
 export type Epoch = { version: number; membership: string | null };
@@ -22,11 +23,13 @@ export type SessionDependencies = {
   move: typeof moveEntry;
   policy: typeof setVotingPolicy;
   leave: typeof leaveLobby;
+  /** Omitted: the session never reads the game (queue-only tests). */
+  readGame?: (membership: string, signal: AbortSignal) => Promise<GameSnapshot>;
 };
 const defaults: SessionDependencies = {
   current: getCurrent, read: getQueue, identity: currentUserId, events: streamLobbyEvents,
   refresh, submit: (m, a) => submitEntry(m, a.url, a.request_id), advance, veto, vote,
-  move: moveEntry, policy: setVotingPolicy, leave: leaveLobby,
+  move: moveEntry, policy: setVotingPolicy, leave: leaveLobby, readGame: getGame,
 };
 export type SessionSnapshot = {
   membership: CurrentLobby | undefined;
@@ -39,6 +42,11 @@ export type SessionSnapshot = {
   syncError: string | null;
   ended: string | null;
   attempt: Attempt | null;
+  game: GameSnapshot | null;
+  /** Server clock minus device clock in ms, from the latest game snapshot. */
+  clockOffset: number;
+  gameBusy: string | null;
+  gameError: string | null;
 };
 const endedMessages = { left: "You left the session.", closed: "The host closed the session.", expired: "The session expired." };
 const message = (e: unknown) => e instanceof Error ? e.message : "Request failed. Please try again.";
@@ -49,6 +57,7 @@ export class QueueSession {
   private state: SessionSnapshot = {
     membership: undefined, queue: null, userId: undefined, live: false,
     loading: true, busy: null, error: null, syncError: null, ended: null, attempt: null,
+    game: null, clockOffset: 0, gameBusy: null, gameError: null,
   };
   private listeners = new Set<() => void>();
   private active = false;
@@ -87,7 +96,7 @@ export class QueueSession {
         BigInt(next.lobby.revision) < BigInt(previous.lobby.revision)) return;
     if (previous?.membership_id !== next.membership_id) {
       this.version++; this.connection?.abort(); this.connection = undefined; this.pendingEnd = undefined;
-      this.update({ membership: next, queue: null, live: false, attempt: null, busy: null, error: null });
+      this.update({ membership: next, queue: null, game: null, live: false, attempt: null, busy: null, error: null, gameBusy: null, gameError: null });
       if (next.membership_id) this.connect(this.capture());
     } else this.update({ membership: next });
   }
@@ -95,6 +104,13 @@ export class QueueSession {
     if (!this.valid(epoch) || view.membership_id !== epoch.membership || view.lobby_id !== this.state.membership?.lobby?.id) return;
     if (this.state.queue && BigInt(view.revision) < BigInt(this.state.queue.revision)) return;
     this.update({ queue: view });
+  }
+  /** Same rules as the queue: bound to the epoch's membership, never regresses the revision. */
+  applyGame(snapshot: GameSnapshot, epoch: Epoch) {
+    if (!this.valid(epoch) || snapshot.membership_id !== epoch.membership || snapshot.lobby_id !== this.state.membership?.lobby?.id) return;
+    if (this.state.game && BigInt(snapshot.revision) < BigInt(this.state.game.revision)) return;
+    const server = Date.parse(snapshot.server_time);
+    this.update({ game: snapshot, clockOffset: Number.isNaN(server) ? this.state.clockOffset : server - Date.now() });
   }
   sync = (): Promise<void> => {
     if (!this.active) return Promise.resolve();
@@ -119,8 +135,12 @@ export class QueueSession {
         this.update({ userId: identity });
         if (next.membership_id) {
           try {
-            const view = await this.deps.read(next.membership_id, signal);
-            if (!signal.aborted) this.applyQueue(view, bound);
+            const readGame = this.deps.readGame;
+            const [view, game] = await Promise.all([
+              this.deps.read(next.membership_id, signal),
+              readGame ? readGame(next.membership_id, signal) : Promise.resolve(undefined),
+            ]);
+            if (!signal.aborted) { this.applyQueue(view, bound); if (game) this.applyGame(game, bound); }
           } catch (error) {
             if (!this.valid(bound) || signal.aborted) continue;
             if (error instanceof QueueError && error.status === 403 && recoveries++ < 2) { this.dirty = true; continue; }
@@ -209,6 +229,27 @@ export class QueueSession {
     }
   }
   discardSubmission() { if (!this.state.busy) this.update({ attempt: null, error: null }); }
+  /**
+   * Runs one game write. Game writes have their own busy flag so the host's player
+   * reporting a song end never waits on a queue edit. Failures resync and rethrow.
+   */
+  async gameMutate<T extends GameMutation>(label: string, op: (membership: string) => Promise<T>, epoch = this.capture()): Promise<T | undefined> {
+    if (!this.valid(epoch) || !epoch.membership) return undefined;
+    this.update({ gameBusy: label, gameError: null });
+    try {
+      const result = await op(epoch.membership);
+      if (this.valid(epoch)) this.applyGame(result.game, epoch);
+      return result;
+    } catch (error) {
+      // A phase or song that already moved on is routine (the ticker won the race): just resync.
+      const routine = error instanceof QueueError && (error.code === "game_phase_changed" || error.code === "game_song_changed");
+      if (this.valid(epoch)) { if (!routine) this.update({ gameError: message(error) }); await this.sync(); }
+      throw error;
+    } finally {
+      if (this.valid(epoch) && this.state.gameBusy === label) this.update({ gameBusy: null });
+    }
+  }
+  clearGameError() { this.update({ gameError: null }); }
   advanceEntry(entryId: string, reason: AdvanceReason, epoch = this.capture()) {
     if (!this.valid(epoch) || !this.isHost() || this.state.queue?.current?.id !== entryId) return Promise.resolve(false);
     if (this.state.busy && reason === "ended") { this.pendingEnd = { entryId, epoch }; return Promise.resolve(false); }
