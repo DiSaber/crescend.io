@@ -89,7 +89,7 @@ function JoinSession({ initialCode }: { initialCode: string }) {
           {busy ? "Joining…" : "Join Session"}
         </button>
         {error && <p role="alert" className="text-red-400 text-center">{error}</p>}
-        <p className="text-xs text-zinc-500 text-center">
+        <p className="text-xs text-zinc-400 text-center">
           {signedIn === "google"
             ? "You're signed in with Google."
             : <>No account needed. Have one? <button type="button" onClick={() => login(returnTo)} className="inline-flex min-h-11 items-center underline hover:text-zinc-300">Sign in with Google</button></>}
