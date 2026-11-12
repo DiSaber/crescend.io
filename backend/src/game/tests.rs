@@ -16,6 +16,7 @@ use std::time::Duration;
 mod g1_engine;
 mod g1_http;
 mod g2_modes;
+mod g3_tune;
 
 const NOW: i64 = 1_800_000_000;
 
