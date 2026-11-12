@@ -181,7 +181,7 @@ export default function BoardPage() {
   useTvScale();
   return (
     <main className="relative w-full min-h-screen lg:h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-4 sm:px-8">
-      <SignInGate returnTo="/lobby/tv/">
+      <SignInGate returnTo="/lobby/tv/" joinFirst message="Join a session with its code to show its board here. Hosting one needs Google.">
         <Board />
       </SignInGate>
     </main>

@@ -48,7 +48,12 @@ export type SessionSnapshot = {
   gameBusy: string | null;
   gameError: string | null;
 };
-const endedMessages = { left: "You left the session.", closed: "The host closed the session.", expired: "The session expired." };
+const endedMessages = {
+  left: "You left the session.",
+  closed: "The host ended the session.",
+  expired: "The session expired.",
+  removed: "The host removed you from the session. You can rejoin with the code.",
+};
 const message = (e: unknown) => e instanceof Error ? e.message : "Request failed. Please try again.";
 
 /** Owns one mounted lobby view. All asynchronous completions carry a local epoch. */

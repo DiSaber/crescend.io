@@ -21,6 +21,7 @@ function auth() {
       return Promise.reject(new Error("This browser needs Web Locks for secure sign-in. Use a current browser over HTTPS or localhost."));
     },
     isStopped: stopped,
+    hasSession: async () => (await guestStatus())?.session ?? true,
     publish: (reason: StopReason) => {
       try { localStorage.setItem(STOP_KEY, reason); } catch { /* BroadcastChannel still notifies open tabs. */ }
       channel?.postMessage(reason);
@@ -50,9 +51,9 @@ export async function currentUserId(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 /** Sign in with just this browser: no Google account. Joining only; hosts need Google. */
-export async function guestSignIn() {
+export async function guestSignIn(joinCode?: string) {
   try { localStorage.removeItem(STOP_KEY); } catch { /* This tab's coordinator restarts below. */ }
-  return auth().guestSignIn();
+  return auth().guestSignIn(joinCode);
 }
 export type Account = { user_id: string; guest: boolean; last_nickname: string | null };
 /** The signed-in account, or undefined when signed out. */
@@ -61,14 +62,18 @@ export async function account(): Promise<Account | undefined> {
   const response = await apiFetch("/api/me");
   return response.ok ? response.json() : undefined;
 }
-/** The nickname this browser's guest account used last, without signing in. */
-export async function lastGuestNickname(): Promise<string | undefined> {
+type GuestStatus = { returning: boolean; last_nickname: string | null; session: boolean };
+/** What this browser's cookies say (docs/guest-join.md), without signing in. */
+async function guestStatus(): Promise<GuestStatus | undefined> {
   try {
     const response = await fetch("/api/auth/guest", { credentials: "same-origin", cache: "no-store" });
-    if (!response.ok) return undefined;
-    const body = await response.json();
-    return typeof body.last_nickname === "string" ? body.last_nickname : undefined;
+    return response.ok ? await response.json() : undefined;
   } catch { return undefined; }
+}
+/** The nickname this browser's guest account used last, without signing in. */
+export async function lastGuestNickname(): Promise<string | undefined> {
+  const status = await guestStatus();
+  return typeof status?.last_nickname === "string" ? status.last_nickname : undefined;
 }
 export function login(returnTo: string) {
   try { localStorage.removeItem(STOP_KEY); } catch { /* New page starts a new coordinator. */ }

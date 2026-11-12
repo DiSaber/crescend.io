@@ -12,6 +12,7 @@ test('queue transport uses bearer auth, exact mutation bodies and stable error c
   globalThis.fetch = async (input, init = {}) => {
     const path = String(input);
     if (path === '/api/auth/refresh') return Response.json({ access_token: 'opaque-test-token' });
+    if (path === '/api/auth/guest') return Response.json({ returning: false, last_nickname: null, session: true });
     requests.push({ path, init });
     if (conflict) return Response.json({ code: 'stale_queue_revision', error: 'Refresh the queue.' }, { status: 409 });
     return Response.json(path.endsWith('/queue') ? queue() : { changed: true, queue: queue() });
