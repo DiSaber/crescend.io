@@ -1,4 +1,5 @@
 mod auth;
+mod game;
 mod lobbies;
 mod queue;
 mod songs;
@@ -15,16 +16,17 @@ use crate::app_state::AppState;
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Crescend.io API"),
-    paths(songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
+    paths(game::list_modes, game::read, game::start, game::stop, game::advance, game::submit, game::vote, songs::search, queue::move_entry, queue::vote, queue::policy, queue::advance, queue::veto, queue::read, queue::submit, lobbies::events, lobbies::leave_lobby, lobbies::create_lobby, lobbies::join_lobby, lobbies::current_lobby, youtube::metadata, auth::start, auth::callback, auth::refresh_tokens, auth::logout),
     modifiers(&Security),
     tags(
         (name = "Authentication", description = "Google login"),
+        (name = "Games", description = "Game modes and the per-lobby game engine"),
         (name = "Lobbies", description = "Lobby endpoints"),
         (name = "Queue", description = "Persistent membership-bound song queue"),
         (name = "YouTube", description = "YouTube endpoints")
     )
 )]
-struct ApiDoc;
+pub(crate) struct ApiDoc;
 
 struct Security;
 impl Modify for Security {
@@ -57,6 +59,7 @@ impl Modify for Security {
 pub fn router(jwt: JwtAuth) -> Router<AppState> {
     let protected = Router::new()
         .nest("/api/lobbies", lobbies::router())
+        .nest("/api/game-modes", game::modes_router())
         .route("/api/songs/search", axum::routing::get(songs::search))
         .route_layer(AsyncRequireAuthorizationLayer::new(jwt))
         .layer(axum::middleware::map_response(lobby_no_store));
@@ -100,6 +103,10 @@ mod lobby_documentation_tests {
                 "/api/lobbies/join",
                 "/api/lobbies/memberships/{membership_id}",
                 "/api/lobbies/memberships/{membership_id}/events",
+                "/api/lobbies/memberships/{membership_id}/game",
+                "/api/lobbies/memberships/{membership_id}/game/advance",
+                "/api/lobbies/memberships/{membership_id}/game/submissions",
+                "/api/lobbies/memberships/{membership_id}/game/votes",
                 "/api/lobbies/memberships/{membership_id}/queue",
                 "/api/lobbies/memberships/{membership_id}/queue/advance",
                 "/api/lobbies/memberships/{membership_id}/queue/entries",
