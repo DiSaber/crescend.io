@@ -318,6 +318,9 @@ pub struct GuestStatus {
     pub returning: bool,
     /// The nickname it used last, if any.
     pub last_nickname: Option<String>,
+    /// The browser holds a refresh cookie (it may still be expired or revoked). When
+    /// false, signing in by refresh would only 401, so the UI skips it.
+    pub session: bool,
 }
 
 /// The signed-in account, for the UI.
@@ -347,11 +350,14 @@ fn too_many_guests(retry_after: i64) -> Response {
 /// Sign in as a guest: no Google account, just this browser. Returns an access JWT and
 /// sets the same rotating refresh cookie as Google login, plus the long-lived
 /// `crescend_guest` cookie that brings this browser's guest account back next time.
-/// Only creating a new guest account counts toward the per-address limit.
+/// Only creating a new guest account counts toward the per-address limit. With
+/// `?join_code=`, a code no active lobby has is refused before any account is made.
 #[utoipa::path(post, path = "/api/auth/guest", tag = "Authentication",
-    params(("X-CSRF-Protection" = String, Header, description = "Required, exactly 1; same-origin requests only")),
+    params(("X-CSRF-Protection" = String, Header, description = "Required, exactly 1; same-origin requests only"),
+        ("join_code" = Option<String>, Query, description = "The code about to be joined; checked first so a wrong code creates no account")),
     responses((status = 200, description = "Guest session issued; sets crescend_refresh and crescend_guest cookies", body = TokenResponse),
-        (status = 400, description = "Nonempty request body", body = ErrorResponse),
+        (status = 400, description = "Nonempty request body, or a malformed join_code (invalid_join_code)", body = ErrorResponse),
+        (status = 404, description = "No active lobby has join_code (lobby_unavailable); nothing was created", body = ErrorResponse),
         (status = 403, description = "CSRF check failed", body = ErrorResponse),
         (status = 429, description = "Too many new guest accounts from this address (too_many_guests); see Retry-After", body = ErrorResponse),
         (status = 500, description = "Account or session could not be stored", body = ErrorResponse)))]
@@ -361,10 +367,33 @@ pub async fn guest_sign_in(State(state): State<AppState>, request: Request) -> R
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.0.ip());
     let config = &state.auth.config;
+    let query = request.uri().query().map(str::to_owned);
     let headers = match cookie_request(config, request).await {
         Ok(headers) => headers,
         Err(error) => return cookie_error(config, error),
     };
+    if let Some(raw) = query.as_deref().and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(key, _)| key == "join_code")
+            .map(|(_, value)| value.into_owned())
+    }) {
+        use crate::database::lobbies::LobbyError;
+        let refused = match crate::models::lobby::normalize_code(&raw) {
+            None => Some(LobbyError::InvalidJoinCode),
+            Some(code) => match state
+                .database
+                .lobby_code_active(&code, || (state.auth.clock)())
+                .await
+            {
+                Ok(true) => None,
+                Ok(false) => Some(LobbyError::LobbyUnavailable),
+                Err(error) => Some(error),
+            },
+        };
+        if let Some(error) = refused {
+            return no_store(error.into_response());
+        }
+    }
     let result = async {
         let presented = guest::key(&headers);
         let existing = match &presented {
@@ -430,11 +459,13 @@ pub async fn guest_sign_in(State(state): State<AppState>, request: Request) -> R
     responses((status = 200, description = "Guest cookie status", body = GuestStatus),
         (status = 500, description = "Storage failure", body = ErrorResponse)))]
 pub async fn guest_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = !matches!(browser::refresh_value(&headers), Ok(None));
     let result = async {
         let Some(key) = guest::key(&headers) else {
             return Ok(GuestStatus {
                 returning: false,
                 last_nickname: None,
+                session,
             });
         };
         let Some(user) = state
@@ -445,11 +476,13 @@ pub async fn guest_status(State(state): State<AppState>, headers: HeaderMap) -> 
             return Ok(GuestStatus {
                 returning: false,
                 last_nickname: None,
+                session,
             });
         };
         Ok::<_, sqlx::Error>(GuestStatus {
             returning: true,
             last_nickname: state.database.last_nickname(user.id).await?,
+            session,
         })
     }
     .await;

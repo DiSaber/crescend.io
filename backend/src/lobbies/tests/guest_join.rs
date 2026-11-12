@@ -231,7 +231,7 @@ async fn guest_status_reports_the_last_nickname_without_signing_in() {
     };
     assert_eq!(
         status(None).await,
-        json!({"returning": false, "last_nickname": null})
+        json!({"returning": false, "last_nickname": null, "session": false})
     );
     let mut browser = Browser::default();
     let guest = f
@@ -241,7 +241,7 @@ async fn guest_status_reports_the_last_nickname_without_signing_in() {
         .unwrap();
     assert_eq!(
         status(browser.guest.clone()).await,
-        json!({"returning": true, "last_nickname": null})
+        json!({"returning": true, "last_nickname": null, "session": false})
     );
     let lobby = f.named_lobby("DJ").await;
     let code = lobby["lobby"]["join_code"].as_str().unwrap();
@@ -253,7 +253,7 @@ async fn guest_status_reports_the_last_nickname_without_signing_in() {
     .await;
     assert_eq!(
         status(browser.guest.clone()).await,
-        json!({"returning": true, "last_nickname": "Kat"})
+        json!({"returning": true, "last_nickname": "Kat", "session": false})
     );
     assert_eq!(f.get(guest, "/api/me").await["last_nickname"], "Kat");
     assert_eq!(status(Some("f".repeat(64))).await["returning"], false);

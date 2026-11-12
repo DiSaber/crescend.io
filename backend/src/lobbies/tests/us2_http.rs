@@ -119,9 +119,12 @@ async fn strict_input_and_body_limits_are_structured() {
         "",
         "ABC12",
         "ABC1234",
-        "AB C12",
+        // Spaces and dashes are ignored ("AB C12" is ABC12), so these stay short.
+        "AB C1",
+        "A-B-C-1-2",
+        "AB_C12",
         "ÄBC123",
-        "\u{00a0}ABC123",
+        "\u{200b}ABC123",
         "ABC12!",
     ] {
         error(

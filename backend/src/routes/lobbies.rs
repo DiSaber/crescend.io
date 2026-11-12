@@ -22,6 +22,10 @@ pub fn router() -> Router<AppState> {
         .route("/current", get(current_lobby))
         .route("/memberships/{membership_id}/events", get(events))
         .route("/memberships/{membership_id}", delete(leave_lobby))
+        .route(
+            "/memberships/{membership_id}/members/{user_id}",
+            delete(remove_member),
+        )
         .route("/join", post(join_lobby).layer(DefaultBodyLimit::max(1024)))
 }
 
@@ -62,10 +66,55 @@ async fn leave_lobby(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    delete, path = "/api/lobbies/memberships/{membership_id}/members/{user_id}", tag = "Lobbies",
+    security(("bearer_auth" = [])),
+    params(
+        ("membership_id" = String, Path, description = "The host's own membership generation: 32 lowercase hex characters"),
+        ("user_id" = String, Path, description = "Account ID of the member to remove, as in members[].user_id")
+    ),
+    responses(
+        (status = 204, description = "Member removed, or already gone. Works like their leaving: their skip votes stop counting, game points stay (shown as left), a game phase waiting only on them closes, and their streams end with membership_ended reason removed. They can rejoin with the code. Empty body."),
+        (status = 400, description = "Malformed IDs or nonempty body (invalid_request), or the target is the host (cannot_remove_host)", body = ErrorResponse),
+        (status = 401, description = "Authentication required", body = ErrorResponse),
+        (status = 403, description = "Not the host (host_required), or the membership is not the caller's active one (membership_forbidden)", body = ErrorResponse),
+        (status = 500, description = "Removal failed without partial state", body = ErrorResponse),
+        (status = 503, description = "Removal temporarily unavailable", body = ErrorResponse)
+    )
+)]
+async fn remove_member(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: Result<Path<(String, String)>, axum::extract::rejection::PathRejection>,
+    request: Request,
+) -> Result<StatusCode, LobbyError> {
+    let (membership, target) = path.map_err(|_| LobbyError::InvalidRequest)?.0;
+    let membership = membership_id(membership)?;
+    let target: i64 = target
+        .parse()
+        .ok()
+        .filter(|id: &i64| *id > 0 && target.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or(LobbyError::InvalidRequest)?;
+    axum::body::to_bytes(request.into_body(), 0)
+        .await
+        .map_err(|_| LobbyError::InvalidRequest)?;
+    if let crate::database::lobbies::Removal::Removed(lobby, revision) = app
+        .database
+        .remove_member(user.id, &membership, target, || (app.auth.clock)())
+        .await?
+    {
+        app.lobby_updates.publish(lobby, revision);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn membership_path(
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
 ) -> Result<String, LobbyError> {
-    let id = path.map_err(|_| LobbyError::InvalidRequest)?.0;
+    membership_id(path.map_err(|_| LobbyError::InvalidRequest)?.0)
+}
+
+fn membership_id(id: String) -> Result<String, LobbyError> {
     if id.len() != 32
         || !id
             .bytes()
@@ -140,7 +189,7 @@ async fn current_lobby(
     post, path = "/api/lobbies/join", tag = "Lobbies",
     security(("bearer_auth" = [])), request_body = JoinLobbyRequest,
     responses(
-        (status = 200, description = "Joined lobby, atomically leaving any previous guest membership, or same-lobby membership (renamed when a different nickname is sent)", body = CurrentLobby),
+        (status = 200, description = "Joined lobby, atomically leaving any previous guest membership, or same-lobby membership (renamed when a different nickname is sent; the host is never renamed this way)", body = CurrentLobby),
         (status = 400, description = "Invalid JSON, field, join code (invalid_join_code) or nickname (invalid_nickname)", body = ErrorResponse),
         (status = 401, description = "Authentication required", body = ErrorResponse),
         (status = 404, description = "Unknown, closed or expired code", body = ErrorResponse),
@@ -287,6 +336,16 @@ impl IntoResponse for LobbyError {
                 );
                 return response;
             }
+            Self::HostRequired => (
+                StatusCode::FORBIDDEN,
+                "host_required",
+                "Only the host can do this.",
+            ),
+            Self::CannotRemoveHost => (
+                StatusCode::BAD_REQUEST,
+                "cannot_remove_host",
+                "The host can't be removed. End the session instead.",
+            ),
             Self::GoogleAccountRequired => (
                 StatusCode::FORBIDDEN,
                 "google_account_required",
@@ -295,7 +354,7 @@ impl IntoResponse for LobbyError {
             Self::InvalidNickname => (
                 StatusCode::BAD_REQUEST,
                 "invalid_nickname",
-                "Nickname must be 1-24 characters with no control characters.",
+                "Nicknames are 1 to 24 characters, with no invisible or control characters.",
             ),
             Self::AlreadyInLobby => (
                 StatusCode::CONFLICT,
@@ -323,7 +382,7 @@ impl IntoResponse for LobbyError {
             Self::InvalidJoinCode => (
                 StatusCode::BAD_REQUEST,
                 "invalid_join_code",
-                "Join code must contain six ASCII letters or digits.",
+                "Session codes are six letters or numbers, like A1B2C3.",
             ),
             Self::LobbyUnavailable => (
                 StatusCode::NOT_FOUND,

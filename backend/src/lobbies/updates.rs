@@ -51,6 +51,8 @@ pub(crate) struct Connection {
     next_read: Instant,
     next_keepalive: Instant,
     ended: bool,
+    /// Counts this stream as the member being here (`presence`); released on drop.
+    _presence: super::presence::Presence,
 }
 
 impl Connection {
@@ -61,7 +63,10 @@ impl Connection {
         bound: StreamMembership,
         receiver: broadcast::Receiver<(LobbyId, i64)>,
     ) -> Self {
+        let presence =
+            super::presence::Presence::connect(app.clone(), bound.lobby_id.as_str(), user.id);
         Self {
+            _presence: presence,
             app,
             user,
             membership,
@@ -161,6 +166,8 @@ impl Connection {
                 };
                 let reason = if state.closed_at.is_some() {
                     Some("closed")
+                } else if state.removed {
+                    Some("removed")
                 } else if !state.member_exists {
                     Some("left")
                 } else {
