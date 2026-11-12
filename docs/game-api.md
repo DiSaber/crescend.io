@@ -26,6 +26,34 @@ from this list and only send keys it contains.
 | `picture_this` | Party's, with prompt `image` | one round per prompt, 60 s collect, 60 s clips |
 | `name_that_tune` | `none` / `none` / `guess_speed` (collect `propose`, challenge `guess_title`) | every proposal, 90 s to propose 2 songs, 30 s guesses from 0:30, 8 s reveal |
 
+## Saved modes
+
+`POST /api/game-modes` saves a private mode for the caller and returns `201` with
+the same shape as a listed mode:
+
+```json
+{"name": "Rainy Duel", "rules": {"prompt": "text", "collect": "pick", "ballot": "pairs",
+  "winner": "pair_winners", "challenge": "listen", "scoring": "votes_to_picker"},
+ "settings": {"rounds": 2, "collect_seconds": 30},
+ "prompts": [{"text": "A rainy day song"}, {"text": "A sunny one"}]}
+```
+
+Validation matches a custom start: name 1–40 characters (`400 invalid_request`),
+`400 invalid_game_rules`, `400 invalid_game_settings`. `prompts` are optional
+default prompts and only `text` modes may keep them (images belong to one lobby),
+else `400 invalid_game_prompts`. An account keeps at most 50 modes
+(`409 mode_limit_reached`).
+
+`GET /api/game-modes` lists the presets and then the caller's saved modes, oldest
+first, with `preset: false`, the 32-hex `id`, `default_prompts`, and a settings
+schema whose defaults are the saved values. Nobody else sees them.
+`DELETE /api/game-modes/{mode_id}` (bodyless) returns 204; an absent ID or another
+account's mode is a no-op, so the response never reveals whether it exists.
+
+Start a saved mode with `{"mode_id": "<its id>"}`; `settings` override its saved
+values and `prompts`, when sent, replace its default prompts. Another account's ID
+returns `404 game_mode_unavailable`. The snapshot's `mode_id` is the saved ID.
+
 Labels and limits depend on the rules: Name That Tune relabels `play_seconds` as
 "Guess time" (10–120 s), adds `reveal_seconds` and hides the voting and overlap keys.
 

@@ -16,6 +16,25 @@ pub struct GameModeView {
     pub preset: bool,
     pub rules: Rules,
     pub settings: Vec<SettingSchema>,
+    /// Saved modes: prompts used when a start request sends none. Text only, since
+    /// images belong to one lobby.
+    pub default_prompts: Vec<GamePrompt>,
+}
+
+/// Saves a private custom mode. `settings` are overrides on the rule set's default
+/// settings, checked like a start request.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveModeRequest {
+    /// 1-40 characters after trimming.
+    pub name: String,
+    pub rules: Rules,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
+    /// Optional default prompts for `text` prompt modes (up to 50).
+    #[serde(default)]
+    pub prompts: Vec<GamePrompt>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

@@ -199,7 +199,10 @@ async fn custom_rules_run_when_valid_and_are_rejected_when_they_conflict() {
     let f = Fixture::new().await;
     let lobby = f.lobby(1).await;
     let resolve = |value: serde_json::Value| {
-        crate::game::resolve(&serde_json::from_value::<StartGameRequest>(value).unwrap())
+        crate::game::resolve(
+            &serde_json::from_value::<StartGameRequest>(value).unwrap(),
+            None,
+        )
     };
     let rules = json!({"prompt":"none","collect":"pick","ballot":"pairs","winner":"most_votes","challenge":"listen","scoring":"votes_to_picker"});
     assert!(matches!(
