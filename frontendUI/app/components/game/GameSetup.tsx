@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deleteMode, listModes, saveMode, serverSettingErrors, startGame, type GameMode } from "../../lib/game";
+import { deleteMode, limitModeName, listModes, modeNameError, playerWarning, saveMode, serverSettingErrors, startGame, type GameMode } from "../../lib/game";
 import PromptEditor, { checkPrompts, newPrompt, type PromptDraft } from "./PromptEditor";
 import SettingsForm, { draftFrom, parseDraft, type Draft } from "./SettingsForm";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
@@ -21,8 +21,15 @@ export default function GameSetup({ session, state, onClose }: {
   const [error, setError] = useState<string | null>(null);
   /** The server's per-setting rejection; cleared as soon as the host edits a setting. */
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const editDraft = (next: Draft) => { setDraft(next); setFieldErrors({}); };
+  // Any edit (or Reset) means the server's last word no longer applies.
+  const editDraft = (next: Draft) => { setDraft(next); setFieldErrors({}); setError(null); setSaving(s => (s.error ? {} : s)); };
   const [saveName, setSaveName] = useState("");
+  const [nameCut, setNameCut] = useState(false);
+  const editName = (text: string) => {
+    const limited = limitModeName(text);
+    setSaveName(limited.value); setNameCut(limited.truncated);
+    setSaving(s => (s.error ? {} : s));
+  };
   const [saving, setSaving] = useState<{ busy?: boolean; message?: string; error?: string }>({});
   const busy = state.gameBusy;
 
@@ -44,8 +51,15 @@ export default function GameSetup({ session, state, onClose }: {
   }
   const parsed = selected ? parseDraft(selected.settings, draft) : null;
   const promptCheck = selected ? checkPrompts(selected.rules.prompt, prompts) : null;
-  const ready = !!parsed?.valid && !promptCheck?.problem;
+  const players = state.membership?.lobby?.members.length ?? 0;
+  const warning = selected ? playerWarning(selected, players) : null;
+  const ready = !!parsed?.valid && !promptCheck?.problem && !warning?.blocks;
   const membershipId = state.membership?.membership_id ?? undefined;
+  const nameProblem = saveName ? modeNameError(saveName) : null;
+  // Names the fields to fix next to Start: local checks, then the server's rejection.
+  const badFields = selected
+    ? selected.settings.filter(s => parsed?.errors[s.key] || fieldErrors[s.key]).map(s => s.label)
+    : [];
 
   async function start(mode: GameMode) {
     if (!parsed?.valid || !promptCheck || promptCheck.problem) return;
@@ -64,14 +78,16 @@ export default function GameSetup({ session, state, onClose }: {
 
   async function save(mode: GameMode) {
     const name = saveName.trim();
-    if (!parsed?.valid || !name) return;
+    if (!parsed?.valid || !name || modeNameError(name)) return;
     // Only text prompts can be kept: uploaded images belong to this lobby.
     const keep = mode.rules.prompt === "text" && promptCheck && !promptCheck.problem ? promptCheck.prompts : undefined;
     setSaving({ busy: true });
     try {
       const saved = await saveMode({ name, rules: mode.rules, settings: parsed.values, ...(keep ? { prompts: keep } : {}) });
       setModes(list => [...(list ?? []), saved]);
-      setSaving({ message: `Saved “${saved.name}” to My modes.` }); setSaveName("");
+      // The server makes a repeated name unique (" 2"), so say what it was saved as.
+      setSaving({ message: saved.name === name ? `Saved “${saved.name}” to My modes.` : `You already have “${name}”, so this one is saved as “${saved.name}”.` });
+      setSaveName(""); setNameCut(false); setFieldErrors({}); setError(null);
     } catch (e) {
       const fields = serverSettingErrors(e);
       setFieldErrors(fields);
@@ -147,6 +163,9 @@ export default function GameSetup({ session, state, onClose }: {
               <a href="/lobby/tv/" target="_blank" rel="noopener" className="inline-flex min-h-11 items-center font-semibold underline">Open the board view ↗</a>
             </div>
           )}
+          {warning && (
+            <p role="status" className={`rounded-lg border p-3 text-sm ${warning.blocks ? "bg-red-950/60 border-red-800 text-red-200" : "bg-amber-950/60 border-amber-800 text-amber-200"}`}>{warning.text}</p>
+          )}
           <SettingsForm schema={selected.settings} draft={draft} onChange={editDraft} disabled={!!busy} serverErrors={fieldErrors} />
           {selected.rules.prompt !== "none" && membershipId && (
             <PromptEditor membershipId={membershipId} rule={selected.rules.prompt} drafts={prompts} update={setPrompts} disabled={!!busy} />
@@ -154,16 +173,20 @@ export default function GameSetup({ session, state, onClose }: {
           <form onSubmit={e => { e.preventDefault(); void save(selected); }} className="flex flex-col gap-2 rounded-lg border border-zinc-800 p-3">
             <label htmlFor="save-mode-name" className="text-sm font-semibold">Save as my mode</label>
             <div className="flex flex-col sm:flex-row gap-2">
-              <input id="save-mode-name" value={saveName} onChange={e => setSaveName(e.target.value)} maxLength={40} placeholder={`e.g. ${selected.name} night`} className="min-h-11 min-w-0 flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 placeholder-zinc-500" />
-              <button type="submit" disabled={!saveName.trim() || !parsed?.valid || saving.busy} className="min-h-11 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 font-semibold disabled:opacity-50">{saving.busy ? "Saving…" : "Save"}</button>
+              {/* No maxLength: it counts UTF-16 units, so an emoji would use two of the 40. */}
+              <input id="save-mode-name" value={saveName} onChange={e => editName(e.target.value)} aria-invalid={!!nameProblem} aria-describedby="save-mode-hint" placeholder={`e.g. ${selected.name} night`} className="min-h-11 min-w-0 flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 placeholder-zinc-500" />
+              <button type="submit" disabled={!saveName.trim() || !!nameProblem || !parsed?.valid || saving.busy} className="min-h-11 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 font-semibold disabled:opacity-50">{saving.busy ? "Saving…" : "Save"}</button>
             </div>
+            <p id="save-mode-hint" className={`text-xs ${nameProblem || nameCut ? "text-amber-300" : "text-zinc-400"}`} role={nameProblem || nameCut ? "status" : undefined}>
+              {nameProblem ?? (nameCut ? "Names are up to 40 characters, so the rest was cut." : `${Array.from(saveName).length}/40 characters`)}
+            </p>
             <p className="text-xs text-zinc-400">
               Saves these settings privately for your account.{selected.rules.prompt === "image" ? " Images aren't saved; add them each time." : selected.rules.prompt === "text" ? " Text prompts are saved too." : ""}
             </p>
             {saving.message && <p role="status" className="text-sm text-green-400">{saving.message}</p>}
             {saving.error && <p role="alert" className="text-sm text-red-400">{saving.error}</p>}
           </form>
-          {parsed && !parsed.valid && <p className="text-sm text-red-400" role="status">Fix the highlighted settings to start.</p>}
+          {badFields.length > 0 && <p className="text-sm text-red-400" role="status">Fix {listLabels(badFields)} to start.</p>}
           {parsed?.valid && promptCheck?.problem && <p className="text-sm text-amber-300" role="status">{promptCheck.problem}</p>}
         </div>
       )}
@@ -177,6 +200,12 @@ export default function GameSetup({ session, state, onClose }: {
       </button>
     </section>
   );
+}
+
+/** “Rounds” and “Voting time”: labels as one phrase. */
+function listLabels(labels: string[]) {
+  const quoted = labels.map(l => `“${l}”`);
+  return quoted.length < 2 ? quoted.join("") : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
 }
 
 /** "Rounds: Must be between 1 and 10." for a server rejection that names one setting. */

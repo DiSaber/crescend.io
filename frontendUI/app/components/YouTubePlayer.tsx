@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { playbackEvents } from "../lib/playback-events";
 
-type Player = { destroy: () => void; playVideo: () => void };
+type Player = { destroy: () => void; playVideo: () => void; getCurrentTime?: () => number };
 type YouTubeApi = {
   Player: new (node: HTMLElement, options: {
     videoId: string; width: string; height: string; playerVars: Record<string, string | number>;
@@ -41,8 +41,10 @@ function loadApi() {
  * docs/game-modes.md). Remount per occurrence, including consecutive occurrences of
  * the same video: `occurrence` is a queue entry ID or a game play_seq.
  */
-export default function YouTubePlayer({ videoId, occurrence, start = 0, disabled, onEnded, onSkipError }: {
+export default function YouTubePlayer({ videoId, occurrence, start = 0, disabled, onEnded, onSkipError, onPosition }: {
   videoId: string; occurrence: string; start?: number; disabled: boolean; onEnded: () => void; onSkipError: () => void;
+  /** Called about once a second, and when the player goes away, with the playback position in seconds. */
+  onPosition?: (seconds: number) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | undefined>(undefined);
@@ -50,6 +52,17 @@ export default function YouTubePlayer({ videoId, occurrence, start = 0, disabled
   const [retry, setRetry] = useState(0);
   const [error, setError] = useState<string>();
   useEffect(() => { callbacks.current = { onEnded }; }, [onEnded]);
+  const report = useRef(onPosition);
+  useEffect(() => { report.current = onPosition; }, [onPosition]);
+  useEffect(() => {
+    const read = () => {
+      const seconds = player.current?.getCurrentTime?.();
+      if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) report.current?.(seconds);
+    };
+    const timer = setInterval(read, 1000);
+    // Unmounting (a game starting) reads the position one last time.
+    return () => { clearInterval(timer); read(); };
+  }, [occurrence]);
   useEffect(() => {
     let cancelled = false; let instance: Player | undefined;
     const events = playbackEvents({

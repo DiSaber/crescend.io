@@ -42,8 +42,8 @@ Validation matches a custom start: name 1–40 characters after trimming, counte
 Unicode characters (`Array.from(name).length`), with no bidirectional controls or
 zero-width characters (`400 invalid_mode_name`, with a message to show). A name the
 caller already uses, or a preset's name, is saved with " 2" (" 3", ...) appended,
-ignoring case and shortened to fit, so read the returned `name`. Also
-`400 invalid_game_rules`, `400 invalid_game_settings`. `prompts` are optional
+ignoring case and shortened to fit, so read the returned `name`. Rules and
+settings fail as on start (`400 invalid_game_rules`, `400 invalid_game_settings`). `prompts` are optional
 default prompts and only `text` modes may keep them (images belong to one lobby),
 else `400 invalid_game_prompts`. An account keeps at most 50 modes
 (`409 mode_limit_reached`).
