@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  limitModeName, modeNameError, nudgeValue, pairSummary, pickErrorMessage, playerWarning, resultGroups, winnerLine,
+  duelShortNotice, emptyRound, emptyRoundLine, limitModeName, modeNameError, modeNameLength, nudgeValue, shownPrompt, pairSummary, pickErrorMessage, playerWarning, resultGroups, winnerLine,
   type GameMode, type GameView, type ResultEntry, type RoundResult, type SettingSchema,
 } from '../../app/lib/game.ts';
 import { QueueError } from '../../app/lib/queue.ts';
@@ -37,9 +37,52 @@ test('mode names count characters like the server and refuse hidden ones', () =>
   assert.match(modeNameError('   ')!, /name/);
 });
 
+test('mode names follow the nickname character rules', () => {
+  for (const bad of ['a\u0000b', 'a\nb', 'a\u2028b', 'a\u2029b', 'a\u00ADb', 'a\u200Cb', 'a\u2066b', 'Kat\uFE0F', 'Kat\u200D']) {
+    assert.match(modeNameError(bad) ?? '', /control, invisible/, JSON.stringify(bad));
+  }
+  const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}';
+  const flag = '\u{1F3F3}\uFE0F\u200D\u{1F308}';
+  for (const good of ['Kat\u2764\uFE0F', family, flag, family.repeat(40)]) assert.equal(modeNameError(good), null, good);
+  assert.equal(modeNameLength(family.repeat(40)), 40, 'a ZWJ family is one character');
+  assert.match(modeNameError(family.repeat(41)) ?? '', /up to 40/);
+  // Spaces around a paste don't use up room: all 40 Bs are kept.
+  const padded = `  ${'B'.repeat(40)}  `;
+  assert.deepEqual(limitModeName(padded), { value: padded, truncated: false });
+  assert.equal(modeNameError(padded), null);
+  assert.equal(modeNameLength(padded), 40);
+  const cut = limitModeName(`  ${family.repeat(41)}`);
+  assert.equal(cut.truncated, true);
+  assert.equal(cut.value, family.repeat(40), 'cut by whole emoji');
+  assert.deepEqual(limitModeName('Party '), { value: 'Party ', truncated: false }, 'typing a space still works');
+});
+
 const entry = (id: string, group: number, votes: number, winner: boolean, outcome: ResultEntry['outcome']): ResultEntry => ({
   submission_id: id, song: { video_id: id, title: `Song ${id}`, author_name: 'A', thumbnail_url: '' },
   submitted_by_user_id: '1', submitted_by_nickname: 'Ana', votes, winner, points: outcome === 'won' ? 50 : 0, group, outcome,
+});
+
+test('overlap play shows the prompt of the song playing', () => {
+  const round1 = { number: 1, text: 'Rainy', image_id: 'a'.repeat(32) };
+  const round2 = { number: 2, text: 'Sunny', image_id: 'b'.repeat(32) };
+  const playing = { play_seq: 1, round: 1, hidden: false, song: null, submitted_by_user_id: '1', submitted_by_nickname: 'Ana', start_seconds: 0, started_at: '', ends_at: null, prompt: round1 };
+  const base = { phase: 'play', prompt: round2, now_playing: playing } as unknown as GameView;
+  assert.deepEqual(shownPrompt(base), round1, 'play shows the playing round');
+  assert.deepEqual(shownPrompt({ ...base, phase: 'collect' }), round2, 'collect shows the current round');
+  assert.deepEqual(shownPrompt({ ...base, now_playing: null }), round2);
+  assert.deepEqual(shownPrompt({ ...base, now_playing: { ...playing, prompt: null } }), round2);
+});
+
+test('an empty pick round and a short Duel get their own lines', () => {
+  const duel = { status: 'running', mode: { name: 'Duel', rules: { collect: 'pick', ballot: 'pairs' }, settings: {} } } as unknown as GameView;
+  const empty: RoundResult = { round: 1, entries: [], guesses: [] };
+  assert.equal(emptyRound(duel, empty), true);
+  assert.equal(emptyRoundLine(empty), 'Round 1: nobody picked a song.');
+  assert.equal(emptyRound(duel, null), false);
+  assert.equal(emptyRound({ ...duel, mode: { ...duel.mode, rules: { ...duel.mode.rules, collect: 'propose' } } }, empty), false);
+  assert.equal(duelShortNotice(duel, 2), 'Duel needs 3 players for voting; remaining pairs are ties until more join.');
+  assert.equal(duelShortNotice(duel, 3), null);
+  assert.equal(duelShortNotice({ ...duel, status: 'ended' }, 2), null);
 });
 
 test('Duel results group by pair and say which song beat which', () => {

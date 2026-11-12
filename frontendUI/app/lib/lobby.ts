@@ -2,7 +2,11 @@
 import { apiFetch } from "./auth.ts";
 
 /** `nickname` is plain text chosen by the member: render it as text, never as HTML. */
-export type Member = { user_id: string; role: "owner" | "member"; nickname: string; joined_at: string };
+export type Member = {
+  user_id: string; role: "owner" | "member"; nickname: string; joined_at: string;
+  /** No open stream for over a minute: the game and skip votes stop waiting for them. */
+  away?: boolean;
+};
 export type Lobby = {
   id: string;
   join_code: string;
@@ -50,13 +54,18 @@ const FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2
 export function nicknameLength(name: string): number {
   return graphemes(name).length;
 }
-function graphemes(name: string): string[] {
+/** Grapheme clusters, the characters a person sees. */
+export function graphemes(name: string): string[] {
   if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
     return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(name), s => s.segment);
   }
   return Array.from(name);
 }
-function invisible(raw: string): boolean {
+/**
+ * Whether a display name (nickname or mode name) has a control, invisible or
+ * direction-changing character, or a joiner or variation selector outside an emoji.
+ */
+export function hiddenCharacter(raw: string): boolean {
   const chars = Array.from(raw);
   return chars.some((c, i) => {
     const before = chars[i - 1];
@@ -68,13 +77,16 @@ function invisible(raw: string): boolean {
     return FORBIDDEN.test(c);
   });
 }
+/** One character stacking more code points than the server allows. */
+export const stacked = (chars: string[]) => chars.some(c => Array.from(c).length > MAX_SCALARS_PER_CHAR);
+
 export function nicknameProblem(raw: string): string | undefined {
   const name = normalizeNickname(raw);
   if (!name) return "Pick a nickname.";
-  if (invisible(raw)) return "Nicknames can't contain invisible or control characters.";
+  if (hiddenCharacter(raw)) return "Nicknames can't contain invisible or control characters.";
   const chars = graphemes(name);
   if (chars.length > NICKNAME_MAX) return `Nicknames are at most ${NICKNAME_MAX} characters.`;
-  if (chars.some(c => Array.from(c).length > MAX_SCALARS_PER_CHAR)) return "That nickname has too many stacked marks.";
+  if (stacked(chars)) return "That nickname has too many stacked marks.";
   return undefined;
 }
 

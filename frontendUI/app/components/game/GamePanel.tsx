@@ -3,7 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import SongPicker from "../SongPicker";
 import { Countdown, GameAnnouncer, GameImage, Scoreboard, SongRow, phaseName, playerName, roundLabel, type NameFn } from "./bits";
-import { advanceGame, castVote, endGame, guessTitle, leaders, joinNames, pairSummary, pickErrorMessage, resultGroups, submitSong, type GameMutation, type GameView, type ResultEntry, type RoundResult } from "../../lib/game";
+import { advanceGame, castVote, duelShortNotice, emptyRound, emptyRoundLine, endGame, guessTitle, leaders, joinNames, pairSummary, pickErrorMessage, resultGroups, shownPrompt, submitSong, type GameMutation, type GameView, type ResultEntry, type RoundResult } from "../../lib/game";
 import { newRequestId, QueueError } from "../../lib/queue";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
 
@@ -95,6 +95,8 @@ export default function GamePanel({ session, state, onNewGame, player }: {
   const playingRound = game.now_playing?.round ?? null;
   const resultsWaiting = !!game.last_result && playingRound !== null && game.last_result.round > playingRound;
   const out = game.guess ? game.guess.guesses_left <= 0 : false;
+  const prompt = shownPrompt(game);
+  const duelNotice = duelShortNotice(game, state.membership?.lobby?.members.length ?? 0);
 
   return (
     <section aria-label="Game" className="w-full max-w-4xl flex flex-col gap-4">
@@ -108,13 +110,13 @@ export default function GamePanel({ session, state, onNewGame, player }: {
           <Countdown endsAt={game.phase_ends_at ?? (game.phase === "play" ? game.now_playing?.ends_at ?? null : null)} offset={offset} />
         </header>
 
-        {game.prompt && (
+        {prompt && (
           <div className="rounded-lg bg-zinc-800 p-3 flex flex-col gap-3">
-            <p className="text-xs text-zinc-400">Prompt {game.prompt.number}</p>
-            {game.prompt.image_id && (
-              <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="w-full max-h-[60vh] rounded-lg object-contain bg-black min-h-40" />
+            <p className="text-xs text-zinc-400">Prompt {prompt.number}</p>
+            {prompt.image_id && (
+              <GameImage membershipId={membershipId} imageId={prompt.image_id} alt={prompt.text ?? "Round image"} className="w-full max-h-[60vh] rounded-lg object-contain bg-black min-h-40" />
             )}
-            {game.prompt.text && <p className="text-xl font-semibold">{game.prompt.text}</p>}
+            {prompt.text && <p className="text-xl font-semibold">{prompt.text}</p>}
           </div>
         )}
 
@@ -178,11 +180,11 @@ export default function GamePanel({ session, state, onNewGame, player }: {
                   autoComplete="off"
                   aria-label="Your guess: the song's title"
                   placeholder="Type the song's title"
-                  disabled={!game.guess.eligible || out}
+                  disabled={!game.guess.eligible}
                   aria-describedby="guess-left"
                   className="min-w-0 flex-1 p-3 text-lg rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500 disabled:opacity-60"
                 />
-                <button type="submit" disabled={!guess.trim() || !!busy || out} className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold">
+                <button type="submit" disabled={!guess.trim() || !!busy} className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold">
                   Guess
                 </button>
               </form>
@@ -191,7 +193,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
               // Counts come from the server snapshot, so a refresh or a second tab agrees.
               <p id="guess-left" role="status" className={out ? "text-amber-300" : "text-sm text-zinc-300"}>
                 {out
-                  ? "Out of guesses for this round. Wait for the answer."
+                  ? <>{shownFeedback && !shownFeedback.correct && <>“{shownFeedback.text}” isn&apos;t it. </>}No wrong guesses left: only the right answer counts now.</>
                   : <>{shownFeedback && !shownFeedback.correct && <>“{shownFeedback.text}” isn&apos;t it. </>}{game.guess.guesses_left} wrong guess{game.guess.guesses_left === 1 ? "" : "es"} left.</>}
               </p>
             )}
@@ -210,7 +212,12 @@ export default function GamePanel({ session, state, onNewGame, player }: {
         )}
         {game.phase === "play" && !playing && <p className="text-sm text-zinc-400">Waiting for the song to start…</p>}
 
-        {game.last_result && game.phase !== "reveal" && !propose && (
+        {duelNotice && <p role="status" className="rounded-lg bg-amber-950/60 border border-amber-800 p-3 text-sm text-amber-200">{duelNotice}</p>}
+
+        {game.last_result && game.phase !== "reveal" && !propose && emptyRound(game, game.last_result) && (
+          <p className="rounded-lg bg-zinc-950/50 p-3 text-sm text-zinc-300">{emptyRoundLine(game.last_result)}</p>
+        )}
+        {game.last_result && game.phase !== "reveal" && !propose && !emptyRound(game, game.last_result) && (
           <RoundResults result={game.last_result} name={name} pairs={game.mode.rules.ballot === "pairs"} upNext={resultsWaiting && game.status === "running"} />
         )}
         {game.last_result && game.phase === "ended" && propose && <Reveal result={game.last_result} name={name} me={me} />}

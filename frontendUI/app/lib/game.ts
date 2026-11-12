@@ -1,6 +1,7 @@
 // Game API client, following docs/game-api.md.
 import { apiFetch } from "./auth.ts";
 import { QueueError } from "./queue.ts";
+import { graphemes, hiddenCharacter, normalizeNickname, stacked } from "./lobby.ts";
 
 export type Rules = {
   prompt: "none" | "text" | "image";
@@ -36,6 +37,8 @@ export type GameMode = {
 };
 
 export type SettingValues = Record<string, number | boolean>;
+
+export type PromptView = { number: number; text: string | null; image_id: string | null };
 
 export type GameSong = {
   video_id: string; title: string; author_name: string; thumbnail_url: string; embed_url?: string;
@@ -79,6 +82,8 @@ export type NowPlaying = {
   started_at: string;
   /** Null plays the full song and the host reports its end. */
   ends_at: string | null;
+  /** Prompt modes: the prompt of the round this song won (`round`). */
+  prompt?: PromptView | null;
 };
 
 export type GuessStanding = {
@@ -96,7 +101,7 @@ export type GameView = {
   phase: Phase;
   phase_seq: number;
   phase_ends_at: string | null;
-  prompt: { number: number; text: string | null; image_id: string | null } | null;
+  prompt: PromptView | null;
   my_submissions: { id: string; song: GameSong }[];
   submission_count: number;
   ballot: { groups: { entries: BallotEntry[] }[]; votes_allowed: number; my_votes: string[] } | null;
@@ -236,6 +241,15 @@ export function nudgeValue(spec: SettingSchema, raw: string, dir: 1 | -1): numbe
   return Math.min(top, Math.max(min, next));
 }
 
+/**
+ * The prompt to show: during `play` it is the one of the song actually playing,
+ * which with overlap can be an earlier round's; otherwise the current round's.
+ */
+export function shownPrompt(game: GameView): PromptView | null {
+  if (game.phase === "play" && game.now_playing?.prompt) return game.now_playing.prompt;
+  return game.prompt;
+}
+
 /** The players sharing the top score, when anyone scored. */
 export function leaders(game: GameView) {
   const best = game.scoreboard[0]?.points ?? 0;
@@ -262,24 +276,50 @@ export function resultGroups(result: RoundResult) {
   return [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([, entries]) => entries);
 }
 
-/** Longest mode name, counted like the server (Unicode scalar values after trimming). */
+/**
+ * Longest mode name. Mode names use the nickname character rules (server
+ * `nicknames::display_name`): trimmed, whitespace runs collapsed, counted in
+ * grapheme clusters so any emoji is one character.
+ */
 export const MODE_NAME_MAX = 40;
-/** Bidirectional marks, overrides and isolates, zero-width characters and the BOM. */
-const HIDDEN = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u061C]/;
 
-/** Caps typed or pasted text at 40 characters (an emoji is one), saying when it cut. */
+/** The name as the server stores it, and its length in characters. */
+export function modeNameLength(text: string) {
+  return graphemes(normalizeNickname(text)).length;
+}
+
+/**
+ * Caps typed or pasted text at 40 characters after trimming (so spaces around a
+ * paste don't use up room), saying when it cut. Text within the limit is kept as
+ * typed, so a space before the next word still works.
+ */
 export function limitModeName(text: string): { value: string; truncated: boolean } {
-  const chars = Array.from(text);
+  const name = normalizeNickname(text);
+  const chars = graphemes(name);
   return chars.length > MODE_NAME_MAX ? { value: chars.slice(0, MODE_NAME_MAX).join(""), truncated: true } : { value: text, truncated: false };
 }
 
 /** Why the server would refuse this name, or null. */
 export function modeNameError(text: string): string | null {
-  if (HIDDEN.test(text)) return "Mode names can't contain invisible or direction-changing characters.";
-  const length = Array.from(text.trim()).length;
-  if (length === 0) return "Give the mode a name.";
-  if (length > MODE_NAME_MAX) return `Mode names are up to ${MODE_NAME_MAX} characters.`;
+  if (hiddenCharacter(text)) return "Mode names can't contain control, invisible or direction-changing characters.";
+  const chars = graphemes(normalizeNickname(text));
+  if (chars.length === 0) return "Give the mode a name.";
+  if (chars.length > MODE_NAME_MAX) return `Mode names are up to ${MODE_NAME_MAX} characters.`;
+  if (stacked(chars)) return "That mode name has too many stacked marks.";
   return null;
+}
+
+/** A pick round nobody picked a song for: its results are empty. */
+export function emptyRound(game: GameView, result: RoundResult | null): boolean {
+  return !!result && game.mode.rules.collect === "pick" && result.entries.length === 0;
+}
+export const emptyRoundLine = (result: RoundResult) => `Round ${result.round}: nobody picked a song.`;
+
+/** Shown while a running Duel has fewer than 3 members: nobody can vote in a pair. */
+export function duelShortNotice(game: GameView, members: number): string | null {
+  return game.status === "running" && game.mode.rules.ballot === "pairs" && members < 3
+    ? "Duel needs 3 players for voting; remaining pairs are ties until more join."
+    : null;
 }
 
 /** Players a mode needs: Duel cannot vote with two, and Name That Tune is thin. */

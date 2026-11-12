@@ -689,6 +689,7 @@ impl Database {
                         role: MemberRole::for_user(user_id, user_id),
                         nickname: name,
                         joined_at: created_at,
+                        away: false,
                     }],
                 }),
             };
@@ -735,7 +736,8 @@ fn game_error(error: crate::game::GameError) -> LobbyError {
     }
 }
 
-/// Current members in join order, each with their name in this lobby.
+/// Current members in join order, each with their name in this lobby and whether the
+/// game is skipping them for presence (`away`).
 async fn roster(
     conn: &mut sqlx::SqliteConnection,
     lobby: &LobbyId,
@@ -744,6 +746,7 @@ async fn roster(
     let rows: Vec<(i64, DateTime<Utc>)> = sqlx::query_as("SELECT user_id, joined_at FROM lobby_memberships WHERE lobby_id = ? ORDER BY joined_at, user_id")
         .bind(lobby.as_str()).fetch_all(&mut *conn).await?;
     let names = super::nicknames::lobby_names(&mut *conn, lobby.as_str()).await?;
+    let away = crate::lobbies::presence::away(lobby.as_str());
     Ok(rows
         .into_iter()
         .map(|(id, joined_at)| MemberView {
@@ -751,6 +754,7 @@ async fn roster(
             role: MemberRole::for_user(id, owner),
             nickname: super::nicknames::name_of(&names, id),
             joined_at,
+            away: id != owner && away.contains(&id),
         })
         .collect())
 }
