@@ -19,6 +19,8 @@ mod g2_modes;
 mod g3_tune;
 mod g4_prompts;
 mod g5_saved;
+mod g6_lifecycle;
+mod g6_load;
 mod g6_nicknames;
 
 const NOW: i64 = 1_800_000_000;
@@ -47,11 +49,12 @@ impl Fixture {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
-            .busy_timeout(Duration::from_secs(1));
+            // Same waits as production (`Database::connect`).
+            .busy_timeout(Duration::from_secs(5));
         let database = Database {
             db_pool: SqlitePoolOptions::new()
                 .max_connections(8)
-                .acquire_timeout(Duration::from_secs(2))
+                .acquire_timeout(Duration::from_secs(5))
                 .connect_with(options)
                 .await
                 .unwrap(),
