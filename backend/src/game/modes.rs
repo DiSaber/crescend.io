@@ -149,11 +149,73 @@ impl Settings {
             _ => serde_json::Value::Null,
         }
     }
+
+    fn set(&mut self, key: &str, value: i64) {
+        let flag = value != 0;
+        match key {
+            "rounds" => self.rounds = value,
+            "collect_seconds" => self.collect_seconds = value,
+            "vote_seconds" => self.vote_seconds = value,
+            "play_seconds" => self.play_seconds = value,
+            "clip_start_seconds" => self.clip_start_seconds = value,
+            "votes_per_player" => self.votes_per_player = value,
+            "songs_per_player" => self.songs_per_player = value,
+            "self_vote" => self.self_vote = flag,
+            "overlap_next_round" => self.overlap_next_round = flag,
+            _ => unreachable!("unknown setting {key}"),
+        }
+    }
 }
 
-/// The keys a rule set exposes, in display order.
-pub fn keys(_rules: &Rules) -> Vec<&'static str> {
-    SPECS.iter().map(|s| s.key).collect()
+/// The keys a rule set exposes, in display order. Unexposed keys keep their defaults.
+pub fn keys(rules: &Rules) -> Vec<&'static str> {
+    SPECS
+        .iter()
+        .map(|s| s.key)
+        .filter(|key| !(*key == "votes_per_player" && rules.ballot == BallotRule::Pairs))
+        .collect()
+}
+
+/// Why customization was rejected; the message is safe to show.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModeError {
+    Rules(&'static str),
+    Setting(String),
+}
+
+/// Applies `overrides` on top of `definition`, enforcing the served schema: only
+/// exposed keys, integers for integer settings, booleans for boolean ones, and
+/// `min <= value <= max` on the step grid.
+pub fn customize(
+    mut definition: Definition,
+    overrides: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Definition, ModeError> {
+    definition.rules.validate().map_err(ModeError::Rules)?;
+    let exposed = keys(&definition.rules);
+    for (key, value) in overrides {
+        let spec = SPECS
+            .iter()
+            .find(|spec| spec.key == key && exposed.contains(&spec.key))
+            .ok_or_else(|| ModeError::Setting(format!("unknown setting {key}")))?;
+        let value = match spec.kind {
+            SettingType::Boolean => value.as_bool().map(i64::from),
+            SettingType::Integer => value.as_i64().filter(|_| !value.is_f64()),
+        }
+        .ok_or_else(|| ModeError::Setting(format!("{key} has the wrong type")))?;
+        if !(spec.min..=spec.max).contains(&value) || (value - spec.min) % spec.step != 0 {
+            return Err(ModeError::Setting(format!(
+                "{key} must be between {} and {} in steps of {}",
+                spec.min, spec.max, spec.step
+            )));
+        }
+        definition.settings.set(key, value);
+    }
+    Ok(definition)
+}
+
+/// Starting settings for a custom rule set: the preset that shares its collect rule.
+pub fn default_settings(_rules: &Rules) -> Settings {
+    party().settings
 }
 
 pub fn schema(definition: &Definition) -> Vec<SettingSchema> {
@@ -208,11 +270,44 @@ fn party() -> Definition {
     }
 }
 
-pub const PRESETS: &[Preset] = &[Preset {
-    id: "party",
-    description: "Everyone picks a song, everyone votes, the winner plays.",
-    definition: party,
-}];
+fn speed_round() -> Definition {
+    let mut definition = party();
+    definition.name = "Speed Round".into();
+    definition.settings.collect_seconds = 20;
+    definition.settings.vote_seconds = 15;
+    definition.settings.play_seconds = 60;
+    definition.settings.rounds = 8;
+    definition
+}
+
+fn duel() -> Definition {
+    let mut definition = party();
+    definition.name = "Duel".into();
+    definition.rules.ballot = BallotRule::Pairs;
+    definition.rules.winner = WinnerRule::PairWinners;
+    definition.rules.scoring = ScoringRule::WinnerBonus;
+    definition.settings.rounds = 3;
+    definition.settings.play_seconds = 60;
+    definition
+}
+
+pub const PRESETS: &[Preset] = &[
+    Preset {
+        id: "party",
+        description: "Everyone picks a song, everyone votes, the winner plays.",
+        definition: party,
+    },
+    Preset {
+        id: "speed_round",
+        description: "Party on fast timers with one-minute clips.",
+        definition: speed_round,
+    },
+    Preset {
+        id: "duel",
+        description: "Songs face off in pairs; every pair winner plays.",
+        definition: duel,
+    },
+];
 
 pub fn preset(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.id == id)
@@ -221,6 +316,51 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn overrides(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn customize_enforces_keys_types_ranges_and_steps() {
+        let custom = customize(
+            party(),
+            &overrides(json!({"rounds": 0, "play_seconds": 30, "self_vote": true})),
+        )
+        .unwrap();
+        assert_eq!(custom.settings.rounds, 0);
+        assert_eq!(custom.settings.play_seconds, 30);
+        assert!(custom.settings.self_vote);
+        for bad in [
+            json!({"nope": 1}),
+            json!({"rounds": 51}),
+            json!({"rounds": -1}),
+            json!({"collect_seconds": 12}),
+            json!({"collect_seconds": 5}),
+            json!({"rounds": 2.0}),
+            json!({"rounds": "2"}),
+            json!({"self_vote": 1}),
+            json!({"rounds": true}),
+        ] {
+            assert!(
+                matches!(
+                    customize(party(), &overrides(bad.clone())),
+                    Err(ModeError::Setting(_))
+                ),
+                "{bad}"
+            );
+        }
+        // Pairs always take one vote per pair, so the setting is not exposed.
+        assert!(customize(duel(), &overrides(json!({"votes_per_player": 2}))).is_err());
+        assert!(!schema(&duel()).iter().any(|s| s.key == "votes_per_player"));
+        let mut broken = party();
+        broken.rules.winner = WinnerRule::PairWinners;
+        assert!(matches!(
+            customize(broken, &Default::default()),
+            Err(ModeError::Rules(_))
+        ));
+    }
 
     #[test]
     fn presets_are_valid_and_schema_defaults_match_settings() {

@@ -15,6 +15,7 @@ use std::time::Duration;
 
 mod g1_engine;
 mod g1_http;
+mod g2_modes;
 
 const NOW: i64 = 1_800_000_000;
 
@@ -128,10 +129,30 @@ impl Fixture {
     }
 
     async fn start(&self, lobby: &Lobby, mode: &str) -> GameSnapshot {
-        self.database
-            .start_game(&lobby.host, &lobby.host_membership, mode, || self.now())
+        self.start_with(lobby, mode, serde_json::json!({}))
             .await
             .unwrap()
+    }
+
+    async fn start_with(
+        &self,
+        lobby: &Lobby,
+        mode: &str,
+        settings: serde_json::Value,
+    ) -> Result<GameSnapshot, crate::game::GameError> {
+        let request: StartGameRequest =
+            serde_json::from_value(serde_json::json!({"mode_id": mode, "settings": settings}))
+                .unwrap();
+        let (mode_id, definition) = crate::game::resolve(&request)?;
+        self.database
+            .start_game(
+                &lobby.host,
+                &lobby.host_membership,
+                &mode_id,
+                &definition,
+                || self.now(),
+            )
+            .await
     }
 
     async fn view(&self, user: &AuthenticatedUser, membership: &str) -> GameView {

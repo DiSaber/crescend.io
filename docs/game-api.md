@@ -13,12 +13,34 @@ Errors use the shared `{code,error}` envelope ([errors](api-errors.md#game-error
 (one choice per rule: `prompt`, `collect`, `ballot`, `winner`, `challenge`,
 `scoring`) and `settings`, the customize-form schema: a list of
 `{key,label,type,default,min,max,step,unit}` where `type` is `integer` or `boolean`
-(booleans have null min/max/step). Presets in G1: `party`.
+(booleans have null min/max/step). An integer is valid when
+`min <= value <= max` and `(value - min) % step == 0`; build the customize form
+from this list and only send keys it contains.
+
+| Preset | Rules (ballot / winner / scoring) | Defaults that differ from Party |
+| --- | --- | --- |
+| `party` | `all` / `most_votes` / `votes_to_picker` | 5 rounds, 45 s collect, 30 s vote, full songs |
+| `speed_round` | same as Party | 8 rounds, 20 s collect, 15 s vote, 60 s clips |
+| `duel` | `pairs` / `pair_winners` / `winner_bonus` | 3 rounds, 60 s clips; no `votes_per_player` |
 
 ## Starting and ending
 
-Hosts start with `POST /api/lobbies/memberships/{membership_id}/game` and
-`{"mode_id":"party"}`. Guests get `403 host_required`; an unknown mode returns
+Hosts start with `POST /api/lobbies/memberships/{membership_id}/game` and exactly
+one of `mode_id` or `custom`, plus optional `settings` overrides:
+
+```json
+{"mode_id": "duel", "settings": {"rounds": 4, "play_seconds": 45}}
+{"custom": {"name": "Vote Duel", "rules": {"prompt": "none", "collect": "pick", "ballot": "pairs",
+  "winner": "pair_winners", "challenge": "listen", "scoring": "votes_to_picker"}}, "settings": {"rounds": 0}}
+```
+
+`settings` keys must be in the mode's served schema with the right type and range,
+otherwise `400 invalid_game_settings`. A `custom` mode starts from Party's defaults;
+its name is 1�40 characters after trimming. Rule combinations the engine cannot run
+return `400 invalid_game_rules` (`ballot: all` needs `winner: most_votes`;
+`ballot: pairs` needs `winner: pair_winners`). The snapshot's `mode_id` is the
+preset key or `custom`, and `mode` holds the resolved name, rules and settings.
+Guests get `403 host_required`; an unknown preset returns
 `404 game_mode_unavailable`; a running game returns `409 game_running`. Starting
 replaces an ended game and its scoreboard. The response is
 `{"changed":true,"game":<snapshot>}`.
@@ -59,13 +81,13 @@ phases without a timer (`play`, `ended`). `total_rounds` is null for "until stop
 
 Visibility rules: `my_submissions` holds only the caller's own songs for the current
 round; others are counted in `submission_count` without identities. `ballot` exists
-only during `vote` and lists songs anonymously with `mine` and `votable`, plus
-`votes_per_player` and the caller's `my_votes`; it never contains counts or
-submitters. Counts, submitters and points appear in `last_result` only after the
+only during `vote` and lists songs anonymously in `groups` with `mine` and
+`votable`, plus `votes_allowed` (how many votes this caller can cast on this ballot)
+and the caller's `my_votes`; it never contains counts or submitters. Counts, submitters and points appear in `last_result` only after the
 vote closes. `scoreboard` lists active members (including zero scores) and departed
 accounts that scored (`active: false`), highest first, ties by account ID.
 
-## Phases (Party)
+## Phases (Party, Speed Round, Duel)
 
 `collect` → `vote` → `play`, then the next round's `collect`. `phase_seq` increases
 on every change.
@@ -78,6 +100,10 @@ on every change.
   It closes at `phase_ends_at` or once every member has cast every vote they can.
   The most votes wins; ties go to the earliest submission. `VotesToPicker` gives the
   picker 10 points per vote received.
+  In **Duel** (`pairs`) songs pair up in submission order and an odd song out gets a
+  bye (`votable: false`). Each member casts one vote per pair, never in the pair
+  holding their own song unless `self_vote`. Every pair winner plays, in pair order,
+  byes included; `winner_bonus` gives 50 points per contested pair won.
 - **play**: the round's winner joins the game's play list. `now_playing` is the
   head of that list; the host's player plays it from `start_seconds`. With
   `play_seconds: 0` (Party) `ends_at` is null and the host reports the end;
