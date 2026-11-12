@@ -243,7 +243,7 @@ async fn stopping_keeps_scores_and_a_new_start_replaces_the_old_game() {
     let party = crate::game::modes::preset("party").unwrap();
     assert!(matches!(
         f.database
-            .start_game(guest, gm, "party", &(party.definition)(), || f.now())
+            .start_game(guest, gm, "party", &(party.definition)(), &[], || f.now())
             .await,
         Err(GameError::HostRequired)
     ));

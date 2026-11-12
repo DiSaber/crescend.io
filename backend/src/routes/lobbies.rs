@@ -54,6 +54,10 @@ async fn leave_lobby(
         .await?
     {
         app.lobby_updates.publish(lobby, revision);
+        // A host leaving closes the lobby; its prompt images go right away.
+        if app.database.sweep_game_images().await.is_err() {
+            eprintln!("Game image cleanup temporarily unavailable");
+        }
     }
     Ok(StatusCode::NO_CONTENT)
 }

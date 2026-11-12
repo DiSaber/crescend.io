@@ -1,5 +1,6 @@
 //! Game engine orchestration, domain errors and the phase ticker.
 pub mod answer;
+pub mod images;
 pub mod modes;
 pub mod rules;
 
@@ -36,6 +37,11 @@ pub enum GameError {
     HostCannotGuess,
     OwnSong,
     GuessLimit,
+    InvalidPrompts,
+    ImageUnavailable,
+    ImageInUse,
+    ImageLimit,
+    Image(images::ImageError),
     SubmissionUnavailable,
     SelfVote,
     VoteLimit,
@@ -98,6 +104,63 @@ pub(crate) fn resolve(
         modes::ModeError::Setting(_) => GameError::InvalidSettings,
     })?;
     Ok((mode_id, definition))
+}
+
+/// Most prompts one game can carry.
+pub const MAX_PROMPTS: usize = 50;
+/// Longest prompt text, in characters after trimming.
+pub const MAX_PROMPT_CHARS: usize = 200;
+
+/// Checks prompt shapes against the prompt rule and trims their text. Whether each
+/// image exists in the lobby is checked inside the start transaction.
+pub(crate) fn prompts(
+    rule: rules::PromptRule,
+    input: &[crate::models::game::GamePrompt],
+) -> Result<Vec<crate::models::game::GamePrompt>, GameError> {
+    use rules::PromptRule;
+    if rule == PromptRule::None {
+        return if input.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(GameError::InvalidPrompts)
+        };
+    }
+    if input.is_empty() || input.len() > MAX_PROMPTS {
+        return Err(GameError::InvalidPrompts);
+    }
+    input
+        .iter()
+        .map(|prompt| {
+            let text = prompt
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned);
+            if text
+                .as_ref()
+                .is_some_and(|t| t.chars().count() > MAX_PROMPT_CHARS)
+            {
+                return Err(GameError::InvalidPrompts);
+            }
+            let image_id = prompt.image_id.clone();
+            if image_id
+                .as_deref()
+                .is_some_and(|id| !crate::models::queue::valid_id(id))
+            {
+                return Err(GameError::InvalidPrompts);
+            }
+            let fits = match rule {
+                PromptRule::Text => text.is_some() && image_id.is_none(),
+                PromptRule::Image => image_id.is_some(),
+                PromptRule::None => false,
+            };
+            if !fits {
+                return Err(GameError::InvalidPrompts);
+            }
+            Ok(crate::models::game::GamePrompt { text, image_id })
+        })
+        .collect()
 }
 
 pub(crate) fn random_id() -> Result<String, GameError> {
