@@ -37,13 +37,25 @@ async fn log_rows(f: &Fixture) -> Vec<(i64, String, String, String)> {
 #[tokio::test]
 async fn saved_modes_are_private_reusable_and_started_with_their_defaults() {
     let f = Fixture::new().await;
-    let lobby = f.lobby(1).await;
+    let lobby = f.lobby(2).await;
     let (guest, _) = &lobby.guests[0];
     let (base, server) = f.http().await;
     let modes = format!("{base}/api/game-modes");
 
     for (body, code) in [
-        (json!({"name": " ", "rules": rules()}), "invalid_request"),
+        (json!({"name": " ", "rules": rules()}), "invalid_mode_name"),
+        (
+            json!({"name": "Duel\u{202E}nwod", "rules": rules()}),
+            "invalid_mode_name",
+        ),
+        (
+            json!({"name": "Du\u{200B}el", "rules": rules()}),
+            "invalid_mode_name",
+        ),
+        (
+            json!({"name": "\u{1F3B5}".repeat(41), "rules": rules()}),
+            "invalid_mode_name",
+        ),
         (
             json!({"name": "x", "rules": rules(), "extra": true}),
             "invalid_request",
@@ -200,7 +212,7 @@ async fn saved_modes_are_private_reusable_and_started_with_their_defaults() {
 #[tokio::test]
 async fn every_save_and_start_is_logged_by_definition_without_names() {
     let f = Fixture::new().await;
-    let lobby = f.lobby(0).await;
+    let lobby = f.lobby(2).await;
     let definition =
         crate::game::custom_definition("First name", serde_json::from_value(rules()).unwrap())
             .unwrap();

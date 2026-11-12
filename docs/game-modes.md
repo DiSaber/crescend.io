@@ -1,6 +1,6 @@
 # Game modes: plan and contract
 
-Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G5 built 2026-11-05 (board view at `/lobby/tv/`). G6 (hardening, lifecycle and load tests, TV polish, accessibility, phone checks) built 2026-11-06.
+Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)). Frontend: G1–G5 built 2026-11-05 (board view at `/lobby/tv/`). G6 (hardening, lifecycle and load tests, TV polish, accessibility, phone checks) built 2026-11-06. G7 (rules decided after QA played every mode) built 2026-11-06.
 
 ## Goal
 
@@ -37,8 +37,8 @@ Each mode picks one implementation of each rule. In Rust each is a trait with a 
 | --- | --- | --- |
 | `Prompt` | What a round asks for | `None`, `Text`, `Image` (text + host image) |
 | `Collect` | What players submit | `Pick` (a song per round, visible after collect), `Propose` (songs up front, kept secret) |
-| `Ballot` | How submissions are voted on | `All` (one ballot), `Pairs` (head-to-head) |
-| `Winner` | How a round's result is chosen | `MostVotes` (ties: earliest submission), `PairWinners` |
+| `Ballot` | How submissions are voted on | `All` (one ballot), `Pairs` (head-to-head, interleaved by player) |
+| `Winner` | How a round's result is chosen | `MostVotes` (ties: earliest submission), `PairWinners` (a tie plays the earliest song, scoring nothing) |
 | `Challenge` | What players do during play | `Listen` (nothing), `GuessTitle` (Name That Tune) |
 | `Scoring` | Who earns points | `VotesToPicker`, `WinnerBonus`, `GuessSpeed` |
 
@@ -68,14 +68,14 @@ Song length is a mode decision: presets set `play_seconds`, and hosts can change
 | --- | --- | --- |
 | **Party** | None / Pick / All / MostVotes / Listen / VotesToPicker | #43's flow: pick, vote, winner plays, overlap |
 | **Speed Round** | Same as Party | 20 s collect, 15 s vote, 60 s clips |
-| **Duel** | None / Pick / Pairs / PairWinners / Listen / WinnerBonus | Songs face off in pairs; winners play |
+| **Duel** | None / Pick / Pairs / PairWinners / Listen / WinnerBonus | Songs face off in pairs; winners play. Needs 3+ players |
 | **Name That Tune** | None / Propose / — / — / GuessTitle / GuessSpeed | Players secretly add songs; each round plays one as a clip; everyone races to type the title |
 | **Picture This** | Image / Pick / All / MostVotes / Listen / VotesToPicker | Host uploads images and prompts; players pick the song that fits best |
 
 ### Name That Tune details
 
 - **Proposals** are secret and come from the normal song search or a pasted link. A proposer can't guess their own song (they sit that round out and score from it instead).
-- **Answer key**: the curated starter title when the song has one; otherwise the YouTube title cleaned of a leading "Artist - ", bracketed or parenthesized suffixes ("(Official Video)", "[HQ]") and "ft."/"feat." tails.
+- **Answer key**: the curated starter title when the song has one; otherwise the YouTube title cleaned of a leading "Artist - ", bracketed or parenthesized suffixes ("(Official Video)", "[HQ]") and "ft."/"feat." tails. Either way bracketed parts and "ft." tails of the key are optional when matching, so "Old Town Road" names "Old Town Road (Remix)" (G7).
 - **Matching**: normalized (case, accents, punctuation removed) and forgiving (a small edit distance relative to length, or all significant words present). Exact rules live in tests with real titles.
 - **Scoring** (`GuessSpeed`): first correct guess gets the most points, decreasing with time; the proposer earns a bonus for each person who guessed it, so obscure picks aren't automatically best.
 - **Hidden title**: players must not see the title or video while guessing. Decision below.
@@ -159,7 +159,7 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
 - **Duel (G2).** Pairs form in submission order with a bye for an odd song; a player
   sits out the pair holding their own song. Every pair winner plays. `WinnerBonus` is
   50 points per contested pair won; byes play but score nothing, so a bye is never
-  better than a win.
+  better than a win. (G7 changed pairing, ties and the player minimum: see below.)
 
 - **Name That Tune flow (G3).** One `collect` for proposals (default 2 each, 90 s),
   then per round `guess` (the clip plays hidden for `play_seconds`, default 30 from
@@ -170,7 +170,8 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   `none`, challenge `guess_title` and scoring `guess_speed`, and the reverse.
 - **Who guesses (G3).** Everyone except the host (their player shows the video) and
   the round's proposer. Guessing closes early once every eligible player is right.
-  Each player gets 10 wrong guesses per round.
+  Each player gets 10 wrong guesses per round (G7: only wrong guesses count, and a
+  right answer is still accepted after the tenth).
 - **Answer keys (G3).** Stored at proposal time: the curated starter title when the
   video is in the starter catalog, else the YouTube title with HTML entities decoded,
   bracketed parts removed, the tail from " ft."/" feat."/" featuring " cut, split on
@@ -260,6 +261,83 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   5 seconds left and time up; every control shows a focus ring; secondary text uses
   zinc-400 (about 7:1 on the cards); the lobby and board have a `main` landmark and an
   `h1`. axe reports no violations on the lobby, setup, each phase and the board.
+
+## QA rules (G7)
+
+Four reviewers played full games of every preset on 2026-11-06. Every round
+completed; these are the rules decided from what they found.
+
+**Duel**
+
+- **Ties score nothing.** A pair that ends level, 0-0 included, plays its earliest
+  song but awards no points; the result marks both songs `tie` ("Tie, no points").
+  Only a song with strictly more votes wins the 50-point bonus. A bye is marked
+  `bye`, never "Winner". Results carry each song's `group` (pair) and `outcome`
+  (`won`, `lost`, `tie`, `bye`), so the round results and the TV board list the
+  songs pair by pair and say which beat which.
+- **Shared wins.** When several players share the top score, the final screen, the
+  TV board and the announcer name all of them ("Tie: Ana and Bo share the win").
+- **Pairing.** Songs are interleaved by player (everyone's first song, then
+  everyone's second) and each is paired with the next song from someone else, so
+  with `songs_per_player` above 1 nobody faces themselves. A self-pair happens only
+  when one player's songs are all that is left.
+- **Three players minimum.** With two, each player's song is in the only pair, so
+  nobody can vote. Starting a `pairs` mode with fewer than three members returns
+  `409 not_enough_players`; setup warns and disables Start.
+- **Own pair.** A vote for the other song in your own pair returns `409 own_pair`
+  ("Your song is in this pair") instead of the self-vote error.
+
+**Name That Tune**
+
+- **Optional parts.** Curated starter titles go through the same cleanup as YouTube
+  titles: brackets and "ft."/"feat." tails are optional on both the key and the
+  guess, so "Old Town Road", "Dracula" and "A Bar Song" count, as do the full titles.
+- **Nobody to guess.** When only the host and the proposer remain, the round is
+  skipped: no clip plays and a 3-second reveal says "Skipped: nobody left to guess".
+  Setup warns when the lobby has fewer than 3 players.
+- **Guess limit.** Only wrong guesses count toward the 10. A wrong guess past the
+  limit is refused without counting; a right one is accepted. The phone shows the
+  remaining count from the server snapshot and a message when the box is disabled.
+- **Ending.** Ending mid-guess closes the round first (the proposer scores for anyone
+  who named it) and the final screen reveals the song (`note: ended_early`). A game
+  with no proposals ends with "Nobody proposed a song." (`note: no_proposals`).
+- **Board never gets the answer.** The TV board reads the game with `?view=board`,
+  which returns the guest-visible snapshot even on the host's account: no video or
+  title while guessing and no own proposals, so the answer is not even in its
+  network responses.
+- **Phone boxes.** The guess and pick boxes start empty on every new phase. A
+  `502 metadata_unavailable` pick or proposal is a definite rejection ("That video
+  can't be used. Try another link or search."), the box stays usable, and pick
+  errors clear as soon as the player edits.
+
+**Party and engine**
+
+- **One copy per round.** In pick modes the same video can be picked once per
+  round: the second gets `409 song_already_picked` ("Someone already picked that song
+  this round. Pick another.").
+- **Overlap headings.** With `overlap_next_round`, the play heading names the round
+  of the song actually playing (`now_playing.round`), and a newer round's results
+  are labelled "Up next" until its songs play.
+- **Points per song.** `points` on each result entry is what that song earned, so a
+  player with two songs sees each one's share; the scoreboard adds them up.
+- **Jukebox resume.** The host's jukebox player saves its position each second (and
+  when a game takes over the player) per queue entry in session storage. After a
+  game the jukebox stays paused behind the Game over card and resumes from that
+  position only when the host presses "Back to the jukebox".
+
+**Customize form and My modes**
+
+- **+/-** move one step in the pressed direction from an off-step value (47 with
+  steps of 5 goes to 50 or 45) and bring out-of-range values back inside.
+- **Summary.** The line next to Start names the fields to fix. Server errors clear on
+  Reset, on any edit and after a successful save.
+- **Mode names** are 1-40 Unicode characters after trimming on both sides (the form
+  counts with `Array.from`, so an emoji is one; the browser's `maxLength` counted
+  two) and says when a paste was cut. Bidirectional controls and zero-width
+  characters are refused (`400 invalid_mode_name`). A name the account already uses,
+  or a preset's name, gets " 2", " 3" appended (ignoring case), shortened to fit 40.
+- **Duplicate settings keys** in a start or save body (`{"rounds": 3, "rounds": 50}`)
+  are `400 invalid_request`, instead of the last value silently winning.
 
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 

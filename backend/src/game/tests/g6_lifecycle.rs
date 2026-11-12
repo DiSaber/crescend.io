@@ -87,7 +87,7 @@ async fn host_leaving_mid_vote_ends_the_game_for_everyone() {
     }
     // Guests lose the game with the lobby: reads and every write are refused.
     assert!(matches!(
-        f.database.game_view(a, am, || f.now()).await,
+        f.database.game_view(a, am, false, || f.now()).await,
         Err(GameError::MembershipForbidden)
     ));
     assert!(matches!(
@@ -158,7 +158,7 @@ async fn lobby_expiring_mid_round_freezes_and_then_deletes_the_game() {
     f.advance(19);
     assert_eq!(
         f.database
-            .game_view(&guest, gm, || f.now())
+            .game_view(&guest, gm, false, || f.now())
             .await
             .unwrap()
             .game
@@ -170,7 +170,7 @@ async fn lobby_expiring_mid_round_freezes_and_then_deletes_the_game() {
     f.advance(1);
     // At the expiry instant the lobby is gone for reads, writes and the ticker.
     assert!(matches!(
-        f.database.game_view(&guest, gm, || f.now()).await,
+        f.database.game_view(&guest, gm, false, || f.now()).await,
         Err(GameError::MembershipForbidden)
     ));
     assert!(matches!(

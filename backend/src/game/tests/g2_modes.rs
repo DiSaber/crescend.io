@@ -46,7 +46,7 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
     );
 
     assert!(
-        matches!(f.vote(g0, m0, &ids[0]).await, Err(GameError::SelfVote)),
+        matches!(f.vote(g0, m0, &ids[0]).await, Err(GameError::OwnPair)),
         "own pair, other song"
     );
     f.vote(g0, m0, &ids[2]).await.unwrap();
@@ -54,12 +54,12 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
         matches!(f.vote(g0, m0, &ids[3]).await, Err(GameError::VoteLimit)),
         "one vote per pair"
     );
-    f.vote(&lobby.host, &lobby.host_membership, &ids[3])
+    f.vote(&lobby.host, &lobby.host_membership, &ids[2])
         .await
         .unwrap();
     f.vote(g1, m1, &ids[0]).await.unwrap();
     let game = f.vote(g2, m2, &ids[1]).await.unwrap().game.game.unwrap();
-    // Pair 1: host 1 vote vs g0 1 vote -> earliest (host). Pair 2: g1 1 vs g2 1 -> g1.
+    // Pair 1 ties 1-1: the earliest song (host) plays, nobody scores. Pair 2: g1 wins 2-0.
     assert_eq!((game.round, game.phase), (2, Phase::Collect));
     let playing = game.now_playing.unwrap();
     assert_eq!(playing.song.as_ref().unwrap().video_id, "hosthost01");
@@ -73,6 +73,24 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
         .map(|e| e.submission_id.clone())
         .collect();
     assert_eq!(winners, vec![ids[0].clone(), ids[2].clone()]);
+    let outcome = |id: &str| {
+        let e = result
+            .entries
+            .iter()
+            .find(|e| e.submission_id == id)
+            .unwrap();
+        (e.group, e.outcome)
+    };
+    assert_eq!(outcome(&ids[0]), (0, ResultOutcome::Tie));
+    assert_eq!(outcome(&ids[1]), (0, ResultOutcome::Tie));
+    assert_eq!(outcome(&ids[2]), (1, ResultOutcome::Won));
+    assert_eq!(outcome(&ids[3]), (1, ResultOutcome::Lost));
+    let order: Vec<_> = result
+        .entries
+        .iter()
+        .map(|e| e.submission_id.clone())
+        .collect();
+    assert_eq!(order, ids, "results stay grouped by pair, winner first");
     let points = |user: &AuthenticatedUser| {
         game.scoreboard
             .iter()
@@ -80,7 +98,7 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
             .unwrap()
             .points
     };
-    assert_eq!(points(&lobby.host), crate::game::rules::WIN_BONUS);
+    assert_eq!(points(&lobby.host), 0, "a tie scores nothing");
     assert_eq!(points(g1), crate::game::rules::WIN_BONUS);
     assert_eq!(points(g0), 0);
 
@@ -197,7 +215,7 @@ async fn start_settings_are_validated_against_the_schema() {
 #[tokio::test]
 async fn custom_rules_run_when_valid_and_are_rejected_when_they_conflict() {
     let f = Fixture::new().await;
-    let lobby = f.lobby(1).await;
+    let lobby = f.lobby(2).await;
     let resolve = |value: serde_json::Value| {
         crate::game::resolve(
             &serde_json::from_value::<StartGameRequest>(value).unwrap(),
@@ -217,7 +235,7 @@ async fn custom_rules_run_when_valid_and_are_rejected_when_they_conflict() {
     let good = json!({"prompt":"none","collect":"pick","ballot":"pairs","winner":"pair_winners","challenge":"listen","scoring":"votes_to_picker"});
     assert!(matches!(
         resolve(json!({"custom": {"name": "   ", "rules": good}})),
-        Err(GameError::InvalidRequest)
+        Err(GameError::InvalidModeName(_))
     ));
     let (mode_id, definition) = resolve(
         json!({"custom": {"name": " Vote Duel ", "rules": good}, "settings": {"rounds": 0}}),

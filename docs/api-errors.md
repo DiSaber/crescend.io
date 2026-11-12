@@ -83,13 +83,18 @@ and `415 unsupported_media_type` match the queue. Host-only routes return
 schema (unknown key, wrong type, out of range or off the step grid). Its body adds
 `setting` (the rejected key) and `detail` (a reason to show next to that field, such
 as `"must be between 0 and 50"`);
-`400 invalid_game_rules` a rule combination the engine cannot run.
+`400 invalid_game_rules` a rule combination the engine cannot run;
+`400 invalid_mode_name` a mode name that is empty, over 40 characters or holds
+invisible or direction-changing characters (the message says which). A settings
+object that repeats a key is `400 invalid_request`.
 `404 game_mode_unavailable` is an unknown mode; `404 game_submission_unavailable`
 a vote target that is not on the current ballot. Conflicts (all 409): `game_running`
 (start while running), `game_not_running`, `game_phase_closed` (action not open in
 this phase), `game_phase_changed` (stale `phase_seq`), `game_song_changed`
 (`play_seq` is not the playing song), `submission_limit_reached`,
-`vote_limit_reached`, `self_vote_forbidden`, `idempotency_conflict`, and for Name
+`vote_limit_reached`, `self_vote_forbidden`, `own_pair` (the other song in the
+voter's own Duel pair), `song_already_picked` (a video already picked this round),
+`not_enough_players` (Duel with fewer than 3 members), `idempotency_conflict`, and for Name
 That Tune `song_already_proposed`, `own_song` (the proposer guessing their own song)
 and `guess_limit_reached`. The host guessing gets `403 host_cannot_guess`.
 Saving a mode past the per-account limit (50) returns `409 mode_limit_reached`;

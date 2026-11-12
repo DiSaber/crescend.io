@@ -59,6 +59,45 @@ pub(crate) async fn log_mode(
     Ok(())
 }
 
+/// The definition with a name none of the owner's saved modes or the presets use
+/// (compared ignoring case): "Party night", then "Party night 2", "Party night 3".
+/// The base is shortened when needed so the suffixed name stays within 40 chars.
+async fn unique_name(
+    tx: &mut Transaction<'_, Sqlite>,
+    owner: i64,
+    definition: &Definition,
+) -> Result<Definition, GameError> {
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT definition FROM game_modes WHERE owner_user_id = ?")
+            .bind(owner)
+            .fetch_all(&mut **tx)
+            .await?;
+    let mut taken: Vec<String> = stored
+        .iter()
+        .filter_map(|d| serde_json::from_str::<Definition>(d).ok())
+        .map(|d| d.name.to_lowercase())
+        .collect();
+    taken.extend(
+        crate::game::modes::PRESETS
+            .iter()
+            .map(|p| (p.definition)().name.to_lowercase()),
+    );
+    let base = definition.name.trim().to_owned();
+    let mut name = base.clone();
+    let mut n = 1;
+    while taken.contains(&name.to_lowercase()) {
+        n += 1;
+        let suffix = format!(" {n}");
+        let room = crate::game::MAX_MODE_NAME_CHARS - suffix.chars().count();
+        let stem: String = base.chars().take(room).collect();
+        name = format!("{}{suffix}", stem.trim_end());
+    }
+    Ok(Definition {
+        name,
+        ..definition.clone()
+    })
+}
+
 fn parse(id: String, definition: String, prompts: String) -> Result<SavedMode, GameError> {
     let invalid = || GameError::Database(sqlx::Error::Protocol("invalid saved mode".into()));
     Ok(SavedMode {
@@ -101,6 +140,7 @@ impl Database {
         if count >= MAX_SAVED_MODES {
             return Err(GameError::ModeLimit);
         }
+        let definition = &unique_name(&mut tx, user.id, definition).await?;
         let id = random_id()?;
         sqlx::query("INSERT INTO game_modes(id, owner_user_id, definition, prompts, created_at) VALUES (?, ?, ?, ?, ?)")
             .bind(&id)

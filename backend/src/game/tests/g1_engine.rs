@@ -359,7 +359,7 @@ async fn failed_revision_rolls_back_game_writes_and_membership_is_enforced() {
     f.start(&lobby, "party").await;
     let outsider = f.account("outsider").await;
     assert!(matches!(
-        f.database.game_view(&outsider, gm, || f.now()).await,
+        f.database.game_view(&outsider, gm, false, || f.now()).await,
         Err(GameError::MembershipForbidden)
     ));
     sqlx::query("CREATE TRIGGER fail_game_revision BEFORE UPDATE OF revision ON lobbies BEGIN SELECT RAISE(ABORT, 'injected rollback'); END")
