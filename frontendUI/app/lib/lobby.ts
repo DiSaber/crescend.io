@@ -1,7 +1,8 @@
 // Lobby API client, following docs/lobby-api.md.
 import { apiFetch } from "./auth.ts";
 
-export type Member = { user_id: string; role: "owner" | "member"; joined_at: string };
+/** `nickname` is plain text chosen by the member: render it as text, never as HTML. */
+export type Member = { user_id: string; role: "owner" | "member"; nickname: string; joined_at: string };
 export type Lobby = {
   id: string;
   join_code: string;
@@ -37,19 +38,35 @@ export async function getCurrent(signal?: AbortSignal): Promise<CurrentLobby> {
   return response.json();
 }
 
+/** Same rules as the server: 1-24 characters after trimming, no control characters. */
+export const NICKNAME_MAX = 24;
+export function nicknameProblem(raw: string): string | undefined {
+  const name = raw.trim().split(/\s+/).join(" ");
+  if (!name) return "Pick a nickname.";
+  if (Array.from(name).length > NICKNAME_MAX) return `Nicknames are at most ${NICKNAME_MAX} characters.`;
+  if (/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/.test(raw)) return "Nicknames can't contain control characters.";
+  return undefined;
+}
+
 /** Create a lobby, or return the caller's existing one on 409. */
-export async function createLobby(): Promise<CurrentLobby> {
-  const response = await apiFetch("/api/lobbies", { method: "POST" });
+export async function createLobby(nickname?: string): Promise<CurrentLobby> {
+  const response = await apiFetch("/api/lobbies", nickname === undefined ? { method: "POST" } : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname }),
+  });
+  if (response.status === 403) throw new Error("Hosting needs a Google account. Guests can join with a code.");
   if (response.status === 409) return getCurrent();
   if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
 
-export async function joinLobby(joinCode: string): Promise<CurrentLobby> {
+export async function joinLobby(joinCode: string, nickname?: string): Promise<CurrentLobby> {
+  const body = JSON.stringify(nickname === undefined ? { join_code: joinCode } : { join_code: joinCode, nickname });
   const response = await apiFetch("/api/lobbies/join", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ join_code: joinCode }),
+    body,
   });
   if (response.status === 404) throw new Error("No active lobby has that code.");
   if (response.status === 409) {
@@ -62,7 +79,7 @@ export async function joinLobby(joinCode: string): Promise<CurrentLobby> {
     const retry = await apiFetch("/api/lobbies/join", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ join_code: joinCode }),
+      body,
     });
     if (!retry.ok) throw new Error(await errorMessage(retry));
     return retry.json();

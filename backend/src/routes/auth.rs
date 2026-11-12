@@ -2,7 +2,7 @@ use crate::api_error::ErrorResponse;
 use crate::{
     app_state::AppState,
     auth::{
-        AuthConfig, AuthError, LOGIN_SECONDS, browser,
+        AuthConfig, AuthError, LOGIN_SECONDS, browser, guest,
         refresh::{self, RefreshCredential, Rotation, TokenResponse},
     },
 };
@@ -15,8 +15,8 @@ use axum::{
     routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use serde::Deserialize;
-use utoipa::IntoParams;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 const COOKIE: &str = "crescend_google_login";
 const COOKIE_PATH: &str = "/api/auth/google";
@@ -311,10 +311,187 @@ pub async fn logout(State(state): State<AppState>, request: Request) -> Response
     logout_response(&state.auth.config, result)
 }
 
+/// What this browser's guest cookie says, for prefilling the join form.
+#[derive(Serialize, ToSchema)]
+pub struct GuestStatus {
+    /// This browser already has a guest account.
+    pub returning: bool,
+    /// The nickname it used last, if any.
+    pub last_nickname: Option<String>,
+}
+
+/// The signed-in account, for the UI.
+#[derive(Serialize, ToSchema)]
+pub struct AccountView {
+    #[schema(pattern = "^[0-9]+$")]
+    pub user_id: String,
+    /// Guest accounts can join lobbies but not create them.
+    pub guest: bool,
+    pub last_nickname: Option<String>,
+}
+
+fn too_many_guests(retry_after: i64) -> Response {
+    let mut response = crate::api_error::ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too_many_guests",
+        "Too many new guests from this network. Try again later.",
+    )
+    .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from(retry_after.max(1) as u64),
+    );
+    no_store(response)
+}
+
+/// Sign in as a guest: no Google account, just this browser. Returns an access JWT and
+/// sets the same rotating refresh cookie as Google login, plus the long-lived
+/// `crescend_guest` cookie that brings this browser's guest account back next time.
+/// Only creating a new guest account counts toward the per-address limit.
+#[utoipa::path(post, path = "/api/auth/guest", tag = "Authentication",
+    params(("X-CSRF-Protection" = String, Header, description = "Required, exactly 1; same-origin requests only")),
+    responses((status = 200, description = "Guest session issued; sets crescend_refresh and crescend_guest cookies", body = TokenResponse),
+        (status = 400, description = "Nonempty request body", body = ErrorResponse),
+        (status = 403, description = "CSRF check failed", body = ErrorResponse),
+        (status = 429, description = "Too many new guest accounts from this address (too_many_guests); see Retry-After", body = ErrorResponse),
+        (status = 500, description = "Account or session could not be stored", body = ErrorResponse)))]
+pub async fn guest_sign_in(State(state): State<AppState>, request: Request) -> Response {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip());
+    let config = &state.auth.config;
+    let headers = match cookie_request(config, request).await {
+        Ok(headers) => headers,
+        Err(error) => return cookie_error(config, error),
+    };
+    let result = async {
+        let presented = guest::key(&headers);
+        let existing = match &presented {
+            Some(key) => state
+                .database
+                .get_user_by_subject(&guest::subject(key))
+                .await
+                .map_err(|_| AuthError::Internal)?,
+            None => None,
+        };
+        let (key, user) = match (presented, existing) {
+            (Some(key), Some(user)) if user.is_guest() => (key, user),
+            (presented, _) => {
+                if let Err(retry) = state
+                    .auth
+                    .guests
+                    .try_acquire(guest::client_ip(&headers, peer))
+                {
+                    return Ok(Err(retry));
+                }
+                let key = match presented {
+                    Some(key) => key,
+                    None => guest::new_key().ok_or(AuthError::Internal)?,
+                };
+                let user = state
+                    .database
+                    .upsert_user(&guest::subject(&key))
+                    .await
+                    .map_err(|_| AuthError::Internal)?;
+                (key, user)
+            }
+        };
+        // Replace, not stack, a session this browser still holds.
+        if let Ok(Some(token)) = browser::refresh_value(&headers) {
+            refresh::revoke(&state.database, &token).await?;
+        }
+        let credential = refresh::issue(&state.database, user.id, &state.auth.clock).await?;
+        let access = TokenResponse {
+            access_token: state.auth.jwt.issue(user.id)?,
+            token_type: "Bearer".into(),
+            expires_in: crate::auth::TOKEN_SECONDS,
+        };
+        Ok::<_, AuthError>(Ok((key, Rotation { access, credential })))
+    }
+    .await;
+    match result {
+        Ok(Ok((key, rotation))) => {
+            let mut response = refresh_response(config, Ok(rotation), (state.auth.clock)());
+            if response.status().is_success()
+                && let Ok(value) = guest::cookie(config, key).encoded().to_string().parse()
+            {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+            response
+        }
+        Ok(Err(retry)) => too_many_guests(retry),
+        Err(error) => no_store(error.into_response()),
+    }
+}
+
+/// Whether this browser has a guest account, and its last nickname. Changes nothing.
+#[utoipa::path(get, path = "/api/auth/guest", tag = "Authentication",
+    responses((status = 200, description = "Guest cookie status", body = GuestStatus),
+        (status = 500, description = "Storage failure", body = ErrorResponse)))]
+pub async fn guest_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let result = async {
+        let Some(key) = guest::key(&headers) else {
+            return Ok(GuestStatus {
+                returning: false,
+                last_nickname: None,
+            });
+        };
+        let Some(user) = state
+            .database
+            .get_user_by_subject(&guest::subject(&key))
+            .await?
+        else {
+            return Ok(GuestStatus {
+                returning: false,
+                last_nickname: None,
+            });
+        };
+        Ok::<_, sqlx::Error>(GuestStatus {
+            returning: true,
+            last_nickname: state.database.last_nickname(user.id).await?,
+        })
+    }
+    .await;
+    no_store(match result {
+        Ok(status) => Json(status).into_response(),
+        Err(_) => AuthError::Internal.into_response(),
+    })
+}
+
+/// The signed-in account: its ID, whether it is a guest, and its last nickname.
+#[utoipa::path(get, path = "/api/me", tag = "Authentication",
+    security(("bearer_auth" = [])),
+    responses((status = 200, description = "Account summary", body = AccountView),
+        (status = 401, description = "Authentication required", body = ErrorResponse),
+        (status = 500, description = "Storage failure", body = ErrorResponse)))]
+pub async fn me(
+    State(state): State<AppState>,
+    axum::Extension(user): axum::Extension<crate::auth::AuthenticatedUser>,
+) -> Response {
+    let result = async {
+        let Some(account) = state.database.get_user(user.id).await? else {
+            return Ok(None);
+        };
+        Ok::<_, sqlx::Error>(Some(AccountView {
+            user_id: account.id.to_string(),
+            guest: account.is_guest(),
+            last_nickname: state.database.last_nickname(account.id).await?,
+        }))
+    }
+    .await;
+    match result {
+        Ok(Some(view)) => Json(view).into_response(),
+        Ok(None) => AuthError::Unauthorized.into_response(),
+        Err(_) => AuthError::Internal.into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
+
     use browser::test_config;
 
     fn config() -> AuthConfig {

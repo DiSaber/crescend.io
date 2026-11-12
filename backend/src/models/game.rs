@@ -199,6 +199,9 @@ pub struct ResultEntry {
     pub submission_id: String,
     pub song: ResultSong,
     pub submitted_by_user_id: String,
+    /// Filled in on every read from the lobby's current names.
+    #[serde(default)]
+    pub submitted_by_nickname: String,
     pub votes: i64,
     pub winner: bool,
     pub points: i64,
@@ -217,6 +220,8 @@ pub struct ResultSong {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GuessResult {
     pub user_id: String,
+    #[serde(default)]
+    pub nickname: String,
     /// 1 for the first correct guess.
     pub rank: i64,
     pub points: i64,
@@ -248,6 +253,8 @@ pub struct NowPlaying {
     pub hidden: bool,
     pub song: Option<GameSong>,
     pub submitted_by_user_id: Option<String>,
+    /// Null exactly when `submitted_by_user_id` is.
+    pub submitted_by_nickname: Option<String>,
     pub start_seconds: i64,
     #[schema(value_type = String, format = DateTime)]
     pub started_at: DateTime<Utc>,
@@ -274,6 +281,9 @@ pub struct GuessView {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ScoreEntry {
     pub user_id: String,
+    /// The player's name in this lobby, kept after they leave.
+    pub nickname: String,
+
     pub points: i64,
     /// False once the account has left the lobby.
     pub active: bool,

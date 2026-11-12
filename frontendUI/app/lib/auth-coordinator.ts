@@ -67,6 +67,30 @@ export class AuthCoordinator {
     }
     return this.refresh();
   }
+  /**
+   * Deliberately sign in as a guest (docs/guest-join.md): like a new Google login it
+   * clears an earlier stop, then takes the shared lock so it never races a refresh.
+   * The server reuses this browser's guest account when its guest cookie is present.
+   */
+  async guestSignIn() {
+    this.stopped = false;
+    this.epoch++;
+    this.accessToken = undefined;
+    const epoch = this.epoch;
+    const token = await this.env.lock(async () => {
+      const response = await this.env.fetch("/api/auth/guest", {
+        method: "POST", credentials: "same-origin", headers: { "X-CSRF-Protection": "1" },
+      });
+      if (response.status === 429) throw new Error("Too many new guests from this network right now. Try again later.");
+      if (!response.ok) throw new Error(`Couldn't join as a guest (${response.status}). Try again.`);
+      const body = await response.json();
+      if (typeof body.access_token !== "string") throw new Error("Invalid sign-in response. Try again.");
+      return body.access_token as string;
+    });
+    if (this.stopped || epoch !== this.epoch) throw new SignedOutError();
+    this.accessToken = token;
+    return token;
+  }
   async logout() {
     this.stop("signed-out", true);
     await this.env.lock(async () => {

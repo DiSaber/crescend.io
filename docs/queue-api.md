@@ -19,7 +19,7 @@ resurrects an entry. After leaving/rejoining, use the new membership generation.
 
 GET returns membership/lobby IDs, decimal-string revision, nullable current, ordered
 upcoming and voting policy. Each entry contains server metadata, contributor account
-ID as a decimal string, UTC submission time, active vote count and own `has_voted`.
+ID as a decimal string, `submitted_by_nickname` (the contributor's name in this lobby, kept after they leave; plain text), UTC submission time, active vote count and own `has_voted`.
 Voter identities are private. Default policy is majority: strict majority of active
 guests, excluding the host; zero guests exposes a null effective threshold.
 

@@ -1,6 +1,6 @@
 # Lobby API: membership, live updates, and departure (US1–US5)
 
-`POST /api/lobbies` creates a lobby and joins the authenticated account as its sole owner and first member in one transaction. The request body must be empty. Send the existing access token in the Authorization header; follow [browser authentication](browser-auth.md) to obtain it. The refresh cookie alone does not authorize this operation.
+`POST /api/lobbies` creates a lobby and joins the authenticated account as its sole owner and first member in one transaction. Only Google accounts can host: a [guest account](guest-join.md) gets 403 `google_account_required`. The body is empty (the host keeps their last nickname, or "Host") or `{"nickname": "Daniel"}` with the [nickname rules](guest-join.md#nicknames); anything else is 400 `invalid_request` and a bad nickname is 400 `invalid_nickname`. Send the existing access token in the Authorization header; follow [browser authentication](browser-auth.md) to obtain it. The refresh cookie alone does not authorize this operation.
 
 ```js
 const response = await fetch('/api/lobbies', {
@@ -27,7 +27,7 @@ Success is **201 Created**, `Content-Type: application/json`, and `Cache-Control
     "expires_at": "2026-09-25T20:00:00Z",
     "revision": "1",
     "members": [
-      { "user_id": "42", "role": "owner", "joined_at": "2026-09-24T20:00:00Z" }
+      { "user_id": "42", "role": "owner", "nickname": "Daniel", "joined_at": "2026-09-24T20:00:00Z" }
     ]
   }
 }
@@ -39,7 +39,7 @@ A user can belong to at most one active lobby. Creation while already in a lobby
 
 ## Join by code
 
-`POST /api/lobbies/join` accepts a JSON object containing only `join_code`, with a maximum body size of 1 KiB:
+`POST /api/lobbies/join` accepts a JSON object containing `join_code` and an optional `nickname`, with a maximum body size of 1 KiB. Guests sign in first with `POST /api/auth/guest` ([guest join](guest-join.md)):
 
 ```js
 const response = await fetch('/api/lobbies/join', {
@@ -48,7 +48,7 @@ const response = await fetch('/api/lobbies/join', {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
   },
-  body: JSON.stringify({ join_code: '  a1b2c3  ' }),
+  body: JSON.stringify({ join_code: '  a1b2c3  ', nickname: 'Kat' }),
 });
 const result = await response.json();
 if (response.ok) {
@@ -58,7 +58,7 @@ if (response.ok) {
 
 The server trims surrounding ASCII whitespace and ignores ASCII letter case, then requires six letters/digits. Success returns **200 OK** with the same CurrentLobby shape shown above, including the caller's membership ID and the complete roster. A new join adds one `member`, increments revision once, and preserves the original owner and expiration. Membership grants no administration permissions; ownership cannot be requested or transferred.
 
-Retrying the same lobby returns the existing membership generation and current roster without changing revision. This also applies to the creator. Joining another active lobby automatically moves a guest in one transaction: the old membership ends, its queue moderation is reevaluated, and its revision increments once with the usual `lobby_changed` and `membership_ended` (`left`) updates. Failed joins preserve the old membership. Hosts receive 409 `already_in_lobby` and must explicitly leave to end their session before joining another. Unknown, closed, and expired codes all return the same 404 `lobby_unavailable` response without roster information. A stale membership from a closed or expired lobby does not block joining an active lobby.
+Each member has a `nickname`: 1–24 characters after trimming, no control characters, unique in the lobby ignoring case (a clash gets " 2", " 3", …). Without `nickname` the member keeps their name in this lobby, else gets their last nickname, else "Player". An invalid nickname returns 400 `invalid_nickname` and joins nobody. Nicknames are plain text chosen by members; render them as text, never HTML. Retrying the same lobby returns the existing membership generation and current roster without changing revision, unless a different `nickname` is sent: that renames the member and increments revision once like any roster change. This also applies to the creator. Joining another active lobby automatically moves a guest in one transaction: the old membership ends, its queue moderation is reevaluated, and its revision increments once with the usual `lobby_changed` and `membership_ended` (`left`) updates. Failed joins preserve the old membership. Hosts receive 409 `already_in_lobby` and must explicitly leave to end their session before joining another. Unknown, closed, and expired codes all return the same 404 `lobby_unavailable` response without roster information. A stale membership from a closed or expired lobby does not block joining an active lobby.
 
 Malformed JSON, missing fields, duplicate fields, wrong field types, and unknown fields return 400 `invalid_request`. A malformed normalized code returns 400 `invalid_join_code`. Bodies over 1 KiB return 413 `request_too_large`; missing or non-JSON Content-Type returns 415 `unsupported_media_type`. All join responses carry `Cache-Control: no-store`.
 

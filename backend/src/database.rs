@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod game;
 pub mod game_modes;
 pub mod lobbies;
+pub mod nicknames;
 pub mod queue;
 
 use chrono::{DateTime, Timelike, Utc};
@@ -84,6 +85,7 @@ impl Database {
         .await?;
 
         self.create_lobby_tables().await?;
+        self.create_nickname_tables().await?;
         self.create_queue_tables().await?;
         self.create_catalog_tables().await?;
         self.create_game_tables().await?;
@@ -115,6 +117,22 @@ impl Database {
         .bind(Utc::now())
         .fetch_one(&self.db_pool)
         .await
+    }
+
+    /// Resolve a guest subject (`guest:` + the SHA-256 of the browser's guest key).
+    /// Returns `None` when this browser's guest account does not exist.
+    pub async fn get_user_by_subject(&self, subject: &str) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as("SELECT id, google_sub, created_at FROM users WHERE google_sub = ?")
+            .bind(subject)
+            .fetch_optional(&self.db_pool)
+            .await
+    }
+
+    pub async fn get_user(&self, id: i64) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as("SELECT id, google_sub, created_at FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.db_pool)
+            .await
     }
 
     /// Returns `RowNotFound` when no user has this Google subject.

@@ -6,6 +6,8 @@ export type QueueEntry = {
   id: string;
   video: VideoMetadata;
   submitted_by_user_id: string;
+  /** The submitter's name in this lobby. Plain text: render as text only. */
+  submitted_by_nickname: string;
   submitted_at: string;
   active_vote_count: number;
   has_voted: boolean;

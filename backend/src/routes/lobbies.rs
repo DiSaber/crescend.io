@@ -1,5 +1,5 @@
 use crate::api_error::{ApiError, ErrorResponse};
-use crate::database::lobbies::LobbyError;
+use crate::database::{lobbies::LobbyError, nicknames};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
@@ -11,7 +11,7 @@ use axum::{
 use crate::{
     app_state::AppState,
     auth::AuthenticatedUser,
-    models::lobby::{CurrentLobby, JoinLobbyRequest},
+    models::lobby::{CreateLobbyRequest, CurrentLobby, JoinLobbyRequest},
 };
 
 pub fn router() -> Router<AppState> {
@@ -140,8 +140,8 @@ async fn current_lobby(
     post, path = "/api/lobbies/join", tag = "Lobbies",
     security(("bearer_auth" = [])), request_body = JoinLobbyRequest,
     responses(
-        (status = 200, description = "Joined lobby, atomically leaving any previous guest membership, or unchanged same-lobby membership", body = CurrentLobby),
-        (status = 400, description = "Invalid JSON, field or join code", body = ErrorResponse),
+        (status = 200, description = "Joined lobby, atomically leaving any previous guest membership, or same-lobby membership (renamed when a different nickname is sent)", body = CurrentLobby),
+        (status = 400, description = "Invalid JSON, field, join code (invalid_join_code) or nickname (invalid_nickname)", body = ErrorResponse),
         (status = 401, description = "Authentication required", body = ErrorResponse),
         (status = 404, description = "Unknown, closed or expired code", body = ErrorResponse),
         (status = 409, description = "Hosting another lobby", body = ErrorResponse),
@@ -173,7 +173,7 @@ async fn join_lobby(
                 _ => (
                     StatusCode::BAD_REQUEST,
                     "invalid_request",
-                    "Expected a JSON object containing only join_code.",
+                    "Expected a JSON object containing join_code and an optional nickname.",
                 ),
             };
             return ApiError::new(status, code, message).into_response();
@@ -182,11 +182,17 @@ async fn join_lobby(
     let Some(code) = request.normalized_code() else {
         return LobbyError::InvalidJoinCode.into_response();
     };
+    let nickname = match request.nickname.as_deref().map(nicknames::normalize) {
+        None => None,
+        Some(Some(name)) => Some(name),
+        Some(None) => return LobbyError::InvalidNickname.into_response(),
+    };
     match app_state
         .database
-        .join_lobby_outcome_with(
+        .join_lobby_named(
             user.id,
             &code,
+            nickname.as_deref(),
             || (app_state.auth.clock)(),
             || crate::models::lobby::MembershipId::random().map_err(|_| LobbyError::Unavailable),
         )
@@ -205,18 +211,21 @@ async fn join_lobby(
     }
 }
 
-/// Creates a lobby with the authenticated account as owner and first member.
+/// Creates a lobby with the authenticated Google account as owner and first member.
 ///
-/// The lobby expires 24 hours after creation. The request body must be empty.
+/// The lobby expires 24 hours after creation. The body is empty (the host keeps their
+/// last nickname, or "Host") or `{"nickname": "..."}`. Guest accounts cannot host.
 #[utoipa::path(
     post,
     path = "/api/lobbies",
     tag = "Lobbies",
     security(("bearer_auth" = [])),
+    request_body(content = Option<CreateLobbyRequest>, description = "Optional: an empty body is also accepted"),
     responses(
         (status = 401, description = "Missing, invalid or expired bearer token", body = ErrorResponse),
         (status = 201, description = "Lobby and owner membership created", body = CurrentLobby),
-        (status = 400, description = "Request body must be empty", body = ErrorResponse),
+        (status = 400, description = "Body is neither empty nor {\"nickname\"} (invalid_request), or the nickname breaks the rules (invalid_nickname)", body = ErrorResponse),
+        (status = 403, description = "Guest accounts cannot host; sign in with Google (google_account_required)", body = ErrorResponse),
         (status = 409, description = "Account already belongs to an active lobby", body = ErrorResponse),
         (status = 500, description = "Creation failed without partial state", body = ErrorResponse),
         (status = 503, description = "Creation temporarily unavailable", body = ErrorResponse)
@@ -227,13 +236,27 @@ async fn create_lobby(
     Extension(user): Extension<AuthenticatedUser>,
     request: Request,
 ) -> Result<(StatusCode, Json<CurrentLobby>), LobbyError> {
-    // A zero-byte limit rejects nonempty/chunked bodies without buffering them.
-    axum::body::to_bytes(request.into_body(), 0)
+    let body = axum::body::to_bytes(request.into_body(), 1024)
         .await
         .map_err(|_| LobbyError::InvalidRequest)?;
+    let nickname = if body.is_empty() {
+        None
+    } else {
+        let request: CreateLobbyRequest =
+            serde_json::from_slice(&body).map_err(|_| LobbyError::InvalidRequest)?;
+        Some(nicknames::normalize(&request.nickname).ok_or(LobbyError::InvalidNickname)?)
+    };
+    let account = app_state
+        .database
+        .get_user(user.id)
+        .await?
+        .ok_or(LobbyError::Unauthorized)?;
+    if account.is_guest() {
+        return Err(LobbyError::GoogleAccountRequired);
+    }
     let view = app_state
         .database
-        .create_owned_lobby(user.id, || (app_state.auth.clock)())
+        .create_named_lobby(user.id, nickname.as_deref(), || (app_state.auth.clock)())
         .await?;
     publish(&app_state, &view);
     Ok((StatusCode::CREATED, Json(view)))
@@ -264,6 +287,16 @@ impl IntoResponse for LobbyError {
                 );
                 return response;
             }
+            Self::GoogleAccountRequired => (
+                StatusCode::FORBIDDEN,
+                "google_account_required",
+                "Sign in with Google to host a lobby. Guests can join with a code.",
+            ),
+            Self::InvalidNickname => (
+                StatusCode::BAD_REQUEST,
+                "invalid_nickname",
+                "Nickname must be 1-24 characters with no control characters.",
+            ),
             Self::AlreadyInLobby => (
                 StatusCode::CONFLICT,
                 "already_in_lobby",

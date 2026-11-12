@@ -68,12 +68,9 @@ function Lobby() {
     </div>
   );
 
+  // Nicknames are member-chosen text; JSX renders them as text, never markup.
   const contributor = (entry: QueueEntry) =>
-    entry.submitted_by_user_id === userId
-      ? "you"
-      : entry.submitted_by_user_id === lobby.owner_user_id
-        ? "the host"
-        : `Guest #${entry.submitted_by_user_id}`;
+    entry.submitted_by_user_id === userId ? "you" : entry.submitted_by_nickname;
 
   const voteLabel = (entry: QueueEntry) =>
     threshold === null ? `${entry.active_vote_count} skip votes` : `${entry.active_vote_count}/${threshold} to skip`;
@@ -159,7 +156,8 @@ function Lobby() {
           <ul className="flex flex-wrap gap-2">
             {lobby.members.map((m) => (
               <li key={m.user_id} className={`px-3 py-1 rounded-full text-sm ${m.role === "owner" ? "bg-[#5C172E]" : "bg-zinc-800"}`}>
-                {m.role === "owner" ? "Host" : "Guest"} #{m.user_id}
+                {m.nickname}
+                {m.role === "owner" && <span className="text-zinc-400"> · host</span>}
                 {m.user_id === userId && " (you)"}
               </li>
             ))}

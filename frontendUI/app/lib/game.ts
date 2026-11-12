@@ -47,9 +47,9 @@ export type BallotEntry = { submission_id: string; song: GameSong; mine: boolean
 
 export type RoundResult = {
   round: number;
-  entries: { submission_id: string; song: GameSong; submitted_by_user_id: string; votes: number; winner: boolean; points: number }[];
+  entries: { submission_id: string; song: GameSong; submitted_by_user_id: string; submitted_by_nickname: string; votes: number; winner: boolean; points: number }[];
   answer?: string | null;
-  guesses: { user_id: string; rank: number; points: number }[];
+  guesses: { user_id: string; nickname: string; rank: number; points: number }[];
 };
 
 export type NowPlaying = {
@@ -59,6 +59,7 @@ export type NowPlaying = {
   hidden: boolean;
   song: GameSong | null;
   submitted_by_user_id: string | null;
+  submitted_by_nickname: string | null;
   start_seconds: number;
   started_at: string;
   /** Null plays the full song and the host reports its end. */
@@ -88,7 +89,7 @@ export type GameView = {
   now_playing: NowPlaying | null;
   guess: GuessStanding | null;
   up_next_count: number;
-  scoreboard: { user_id: string; points: number; active: boolean }[];
+  scoreboard: { user_id: string; nickname: string; points: number; active: boolean }[];
 };
 
 export type GameSnapshot = {

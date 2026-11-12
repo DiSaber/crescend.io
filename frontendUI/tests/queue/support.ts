@@ -4,7 +4,7 @@ import type { SessionDependencies } from '../../app/lib/queue-state.ts';
 export function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 export const entry = (id = 'a'): QueueEntry => ({
   id: id.repeat(32), video: { video_id: 'dQw4w9WgXcQ', title: 'Song', author_name: 'Artist', author_url: '', thumbnail_url: '', embed_url: '' },
-  submitted_by_user_id: '1', submitted_at: '2026-10-29T00:00:00Z', active_vote_count: 0, has_voted: false,
+  submitted_by_user_id: '1', submitted_by_nickname: 'Host', submitted_at: '2026-10-29T00:00:00Z', active_vote_count: 0, has_voted: false,
 });
 export function current(id = 'a'.repeat(32)): CurrentLobby {
   return { membership_id: id, lobby: { id: 'c'.repeat(32), join_code: 'ABC123', owner_user_id: '1', created_at: '', expires_at: '', revision: '1', members: [] } };
