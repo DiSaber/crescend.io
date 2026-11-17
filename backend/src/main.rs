@@ -2,6 +2,7 @@ mod api_error;
 mod app_state;
 mod auth;
 mod database;
+mod game;
 mod lobbies;
 mod models;
 mod queue;
@@ -42,7 +43,7 @@ async fn main() {
         .expect("Starter catalog import failed");
     database.start_cleanup();
 
-    let app = routes::router(auth.jwt.clone()).with_state(AppState {
+    let state = AppState {
         search: search::SearchService::new(
             search_config,
             auth.clock.clone(),
@@ -52,7 +53,9 @@ async fn main() {
         database,
         auth,
         lobby_updates: Default::default(),
-    });
+    };
+    game::start_ticker(state.clone());
+    let app = routes::router(state.auth.jwt.clone()).with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     println!("listening on {}", listener.local_addr().unwrap());

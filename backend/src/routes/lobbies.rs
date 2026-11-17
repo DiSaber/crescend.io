@@ -17,6 +17,7 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(super::queue::router())
+        .merge(super::game::lobby_router())
         .route("/", post(create_lobby))
         .route("/current", get(current_lobby))
         .route("/memberships/{membership_id}/events", get(events))

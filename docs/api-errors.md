@@ -51,3 +51,21 @@ returns `503 temporarily_unavailable`; unexpected internal failures use the safe
 returned. Missing credentials, exhausted application allowance and provider
 failures instead return 200 with catalog results and a typed discovery status;
 they do not produce 429 or 502. See [song search](song-search-api.md).
+
+## Game errors
+
+Game routes use the same envelope, bearer challenge and `Cache-Control: no-store`
+as the queue. `400 invalid_request` covers malformed IDs, JSON, extra fields and an
+advance body without exactly one of `phase_seq`/`play_seq`; `413 request_too_large`
+and `415 unsupported_media_type` match the queue. Host-only routes return
+`403 host_required`; ended or foreign generations `403 membership_forbidden`.
+`404 game_mode_unavailable` is an unknown mode; `404 game_submission_unavailable`
+a vote target that is not on the current ballot. Conflicts (all 409): `game_running`
+(start while running), `game_not_running`, `game_phase_closed` (action not open in
+this phase), `game_phase_changed` (stale `phase_seq`), `game_song_changed`
+(`play_seq` is not the playing song), `submission_limit_reached`,
+`vote_limit_reached`, `self_vote_forbidden` and `idempotency_conflict`. Song links
+and metadata fail like the queue (`422 invalid_url`, `502 upstream_unavailable`,
+`502 metadata_unavailable`). Contention is `503 temporarily_unavailable`; unexpected
+storage failures are a sanitized `500 internal_error`. Failures change nothing.
+See [game API](game-api.md).
