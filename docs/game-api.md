@@ -69,7 +69,8 @@ one of `mode_id` or `custom`, plus optional `settings` overrides:
 ```
 
 `settings` keys must be in the mode's served schema with the right type and range,
-otherwise `400 invalid_game_settings`. A `custom` mode starts from Party's defaults;
+otherwise `400 invalid_game_settings` with `setting` (the first rejected key) and
+`detail` (a field-level reason) added to the error body. A `custom` mode starts from Party's defaults;
 its name is 1–40 characters after trimming. Rule combinations the engine cannot run
 return `400 invalid_game_rules` (`ballot: all` needs `winner: most_votes`;
 `ballot: pairs` needs `winner: pair_winners`). The snapshot's `mode_id` is the

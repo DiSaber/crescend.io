@@ -67,6 +67,8 @@ export class QueueSession {
   private dirty = false;
   private flight: Promise<void> | undefined;
   private pendingEnd: { entryId: string; epoch: Epoch } | undefined;
+  /** The membership this client is leaving; its own end event must not read as "closed". */
+  private leaving: string | null = null;
   constructor(deps: SessionDependencies = defaults) { this.deps = deps; }
   getSnapshot = () => this.state;
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
@@ -155,6 +157,8 @@ export class QueueSession {
   }
   ended(reason: keyof typeof endedMessages, epoch: Epoch) {
     if (!this.valid(epoch)) return;
+    // A host's leave closes the lobby, and the stream's end event can beat the DELETE response.
+    if (this.leaving && this.leaving === epoch.membership) reason = "left";
     this.membership({ membership_id: null, lobby: null });
     this.update({ ended: endedMessages[reason], loading: false });
     // Discover any replacement generation without allowing the old read to restore it.
@@ -278,13 +282,18 @@ export class QueueSession {
     const epoch = this.capture();
     if (!epoch.membership || this.state.busy) return false;
     this.update({ busy: "Leaving…", error: null });
+    this.leaving = epoch.membership;
     try {
       await this.deps.leave(epoch.membership);
-      if (!this.valid(epoch)) return false;
+      // The end event may already have closed this membership: that was this leave.
+      if (!this.valid(epoch)) return this.state.ended === endedMessages.left;
       this.ended("left", epoch); return true;
     } catch (error) {
       if (this.valid(epoch)) { this.update({ error: message(error), busy: null }); await this.sync(); }
       return false;
+    } finally {
+      if (this.leaving === epoch.membership) this.leaving = null;
+      if (this.state.busy === "Leaving…") this.update({ busy: null });
     }
   }
 }

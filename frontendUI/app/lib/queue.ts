@@ -36,8 +36,11 @@ export type AdvanceReason = "ended" | "skip" | "playback_error_skip";
 export class QueueError extends Error {
   readonly status: number;
   readonly code: string | undefined;
-  constructor(status: number, code: string | undefined, message: string) {
-    super(message); this.status = status; this.code = code;
+  /** For `invalid_game_settings`: the rejected settings key and a field-level reason. */
+  readonly setting: string | undefined;
+  readonly detail: string | undefined;
+  constructor(status: number, code: string | undefined, message: string, setting?: string, detail?: string) {
+    super(message); this.status = status; this.code = code; this.setting = setting; this.detail = detail;
   }
 }
 

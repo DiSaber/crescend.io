@@ -70,7 +70,7 @@ export default function SongSearch({
     );
   }
   if (!results?.length) {
-    return <p className="text-sm text-zinc-500" aria-live="polite">Searching…</p>;
+    return <p className="text-sm text-zinc-400" aria-live="polite">Searching…</p>;
   }
 
   return (

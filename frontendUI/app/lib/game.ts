@@ -109,14 +109,16 @@ export type UploadedImage = { image_id: string; content_type: string; width: num
 
 async function check<T>(response: Response): Promise<T> {
   if (response.ok) return response.status === 204 ? (undefined as T) : response.json();
-  let code: string | undefined;
+  let code: string | undefined, setting: string | undefined, detail: string | undefined;
   let message = `HTTP ${response.status}`;
   try {
     const body = await response.json();
     code = body.code;
     message = body.error ?? message;
+    if (typeof body.setting === "string") setting = body.setting;
+    if (typeof body.detail === "string") detail = body.detail;
   } catch {}
-  throw new QueueError(response.status, code, message);
+  throw new QueueError(response.status, code, message, setting, detail);
 }
 
 const base = (membershipId: string) => `/api/lobbies/memberships/${encodeURIComponent(membershipId)}/game`;
@@ -177,6 +179,13 @@ export async function fetchImage(membershipId: string, imageId: string, signal?:
   const response = await apiFetch(`${base(membershipId)}/images/${encodeURIComponent(imageId)}`, { signal });
   if (!response.ok) await check(response);
   return response.blob();
+}
+
+/** A field-level message for a server `invalid_game_settings` rejection, keyed by setting. */
+export function serverSettingErrors(error: unknown): Record<string, string> {
+  if (!(error instanceof QueueError) || error.code !== "invalid_game_settings" || !error.setting) return {};
+  const detail = error.detail?.trim() || "is not allowed for this mode";
+  return { [error.setting]: `${detail[0].toUpperCase()}${detail.slice(1)}${/[.!?]$/.test(detail) ? "" : "."}` };
 }
 
 /** Starting values for a customize form: each schema entry's default. */

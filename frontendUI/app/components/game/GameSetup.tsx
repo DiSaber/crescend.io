@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deleteMode, listModes, saveMode, startGame, type GameMode } from "../../lib/game";
+import { deleteMode, listModes, saveMode, serverSettingErrors, startGame, type GameMode } from "../../lib/game";
 import PromptEditor, { checkPrompts, newPrompt, type PromptDraft } from "./PromptEditor";
 import SettingsForm, { draftFrom, parseDraft, type Draft } from "./SettingsForm";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
@@ -19,6 +19,9 @@ export default function GameSetup({ session, state, onClose }: {
   const [draft, setDraft] = useState<Draft>({});
   const [prompts, setPrompts] = useState<PromptDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** The server's per-setting rejection; cleared as soon as the host edits a setting. */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const editDraft = (next: Draft) => { setDraft(next); setFieldErrors({}); };
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState<{ busy?: boolean; message?: string; error?: string }>({});
   const busy = state.gameBusy;
@@ -32,7 +35,7 @@ export default function GameSetup({ session, state, onClose }: {
   }, []);
 
   function choose(mode: GameMode) {
-    setSelected(mode); setDraft(draftFrom(mode.settings)); setError(null); setSaving({});
+    setSelected(mode); setDraft(draftFrom(mode.settings)); setError(null); setSaving({}); setFieldErrors({});
     // A saved mode's default prompts win; otherwise keep prompts already written
     // (and their uploaded images) when switching modes.
     setPrompts(list => mode.default_prompts.length
@@ -52,7 +55,9 @@ export default function GameSetup({ session, state, onClose }: {
       await session.gameMutate("Starting…", m => startGame(m, body));
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start the game.");
+      const fields = serverSettingErrors(e);
+      setFieldErrors(fields);
+      setError(fieldMessage(mode, fields) ?? (e instanceof Error ? e.message : "Could not start the game."));
       session.clearGameError();
     }
   }
@@ -68,7 +73,9 @@ export default function GameSetup({ session, state, onClose }: {
       setModes(list => [...(list ?? []), saved]);
       setSaving({ message: `Saved “${saved.name}” to My modes.` }); setSaveName("");
     } catch (e) {
-      setSaving({ error: e instanceof Error ? e.message : "Could not save the mode." });
+      const fields = serverSettingErrors(e);
+      setFieldErrors(fields);
+      setSaving({ error: fieldMessage(mode, fields) ?? (e instanceof Error ? e.message : "Could not save the mode.") });
     }
   }
   async function remove(mode: GameMode) {
@@ -128,7 +135,7 @@ export default function GameSetup({ session, state, onClose }: {
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between gap-3">
             <h3 className="text-lg font-bold">Customize {selected.name}</h3>
-            <button type="button" onClick={() => setDraft(draftFrom(selected.settings))} className="min-h-11 px-2 text-sm text-zinc-400 underline hover:text-white">Reset</button>
+            <button type="button" onClick={() => editDraft(draftFrom(selected.settings))} className="min-h-11 px-2 text-sm text-zinc-400 underline hover:text-white">Reset</button>
           </div>
           {selected.rules.challenge === "guess_title" && (
             <div className="rounded-lg bg-amber-950/60 border border-amber-800 p-3 text-sm text-amber-200">
@@ -140,7 +147,7 @@ export default function GameSetup({ session, state, onClose }: {
               <a href="/lobby/tv/" target="_blank" rel="noopener" className="inline-flex min-h-11 items-center font-semibold underline">Open the board view ↗</a>
             </div>
           )}
-          <SettingsForm schema={selected.settings} draft={draft} onChange={setDraft} disabled={!!busy} />
+          <SettingsForm schema={selected.settings} draft={draft} onChange={editDraft} disabled={!!busy} serverErrors={fieldErrors} />
           {selected.rules.prompt !== "none" && membershipId && (
             <PromptEditor membershipId={membershipId} rule={selected.rules.prompt} drafts={prompts} update={setPrompts} disabled={!!busy} />
           )}
@@ -150,7 +157,7 @@ export default function GameSetup({ session, state, onClose }: {
               <input id="save-mode-name" value={saveName} onChange={e => setSaveName(e.target.value)} maxLength={40} placeholder={`e.g. ${selected.name} night`} className="min-h-11 min-w-0 flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 placeholder-zinc-500" />
               <button type="submit" disabled={!saveName.trim() || !parsed?.valid || saving.busy} className="min-h-11 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 font-semibold disabled:opacity-50">{saving.busy ? "Saving…" : "Save"}</button>
             </div>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-zinc-400">
               Saves these settings privately for your account.{selected.rules.prompt === "image" ? " Images aren't saved; add them each time." : selected.rules.prompt === "text" ? " Text prompts are saved too." : ""}
             </p>
             {saving.message && <p role="status" className="text-sm text-green-400">{saving.message}</p>}
@@ -170,6 +177,13 @@ export default function GameSetup({ session, state, onClose }: {
       </button>
     </section>
   );
+}
+
+/** "Rounds: Must be between 1 and 10." for a server rejection that names one setting. */
+function fieldMessage(mode: GameMode, fields: Record<string, string>) {
+  const [key, text] = Object.entries(fields)[0] ?? [];
+  if (!key) return null;
+  return `${mode.settings.find(s => s.key === key)?.label ?? key}: ${text}`;
 }
 
 const kinds: Record<string, string> = { all: "vote", pairs: "duel", none: "guess the title" };

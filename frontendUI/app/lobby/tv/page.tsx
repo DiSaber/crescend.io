@@ -2,10 +2,10 @@
 // Thumbnails come from YouTube and prompt images are blob URLs: the static export has no image optimizer.
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import SignInGate from "../../components/SignInGate";
-import { Countdown, GameImage, Scoreboard, phaseName, playerName, roundLabel, type NameFn } from "../../components/game/bits";
+import { Countdown, GameAnnouncer, GameImage, Scoreboard, phaseName, playerName, roundLabel, type NameFn } from "../../components/game/bits";
 import { QueueSession } from "../../lib/queue-state";
 import type { GameView } from "../../lib/game";
 
@@ -35,36 +35,45 @@ function Board() {
   const current = state.queue?.current;
 
   return (
-    <div className="w-full max-w-7xl flex flex-col gap-6 py-6">
-      <header className="flex flex-wrap items-center justify-between gap-4">
+    <div className="w-full max-w-[120rem] flex flex-col gap-6 py-6 lg:h-full lg:min-h-0">
+      <header className="flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-4">
-          <QRCodeSVG value={`${window.location.origin}/join/?code=${lobby.join_code}`} size={96} marginSize={2} title="Scan to join this session" className="rounded-lg shrink-0" />
+          <QRCodeSVG value={`${window.location.origin}/join/?code=${lobby.join_code}`} size={192} marginSize={2} title="Scan to join this session" className="rounded-lg shrink-0 size-24" />
           <div>
             <p className="text-sm text-zinc-400">Join at {window.location.host} with code</p>
             <p className="text-4xl sm:text-6xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           </div>
         </div>
         <div className="text-right">
-          <p className={`text-sm ${state.live ? "text-green-400" : "text-zinc-500"}`}>{state.live ? "● live" : "○ connecting"}</p>
+          <p className={`text-sm ${state.live ? "text-green-400" : "text-zinc-400"}`}>{state.live ? "● live" : "○ connecting"}</p>
           <a href="/lobby/" className="inline-flex min-h-11 items-center text-sm text-zinc-400 underline hover:text-white">Back to the lobby</a>
         </div>
       </header>
 
       {game ? (
-        <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-          <section aria-label="Game board" className="bg-zinc-900 rounded-xl border border-[#5C172E] p-6 flex flex-col gap-6 min-w-0">
-            <div className="flex flex-wrap items-start justify-between gap-4">
+        // On a TV (lg and up) the board fills the screen exactly: the grid takes the
+        // height left under the header and the prompt image takes what the text leaves.
+        <div className="grid gap-6 lg:grid-cols-[2fr_1fr] lg:flex-1 lg:min-h-0 lg:grid-rows-[minmax(0,1fr)]">
+          <section aria-label="Game board" className="bg-zinc-900 rounded-xl border border-[#5C172E] p-6 flex flex-col gap-5 min-w-0 lg:min-h-0 lg:overflow-hidden">
+            <GameAnnouncer game={game} name={name} />
+            <div className="flex flex-wrap items-start justify-between gap-4 shrink-0">
               <div className="min-w-0">
                 <p className="text-lg uppercase tracking-wider text-zinc-400">{roundLabel(game)}</p>
-                <h1 className="text-5xl sm:text-6xl font-extrabold">{phaseName(game)}</h1>
+                <h1 className="text-5xl xl:text-6xl font-extrabold">{phaseName(game)}</h1>
               </div>
               <Countdown size="xl" endsAt={game.phase_ends_at ?? (game.phase === "play" ? game.now_playing?.ends_at ?? null : null)} offset={state.clockOffset} />
             </div>
             {game.prompt && (
-              <div className="flex flex-col gap-4">
-                {game.prompt.text && <p className="text-4xl sm:text-5xl font-bold">{game.prompt.text}</p>}
+              // While voting the ballot needs the room: the image sits beside the prompt
+              // text instead of under it. Otherwise it takes the height left over.
+              <div className={game.phase === "vote"
+                ? "flex flex-row items-stretch gap-4 shrink-0"
+                : `flex flex-col gap-4 min-h-0 lg:overflow-hidden ${game.prompt.image_id ? "lg:flex-1" : "shrink-0"}`}>
+                {game.prompt.text && <p className={`font-bold line-clamp-3 shrink-0 ${game.phase === "vote" ? "flex-1 min-w-0 text-3xl xl:text-4xl" : "text-4xl xl:text-5xl"}`}>{game.prompt.text}</p>}
                 {game.prompt.image_id && (
-                  <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="w-full max-h-[40vh] min-h-48 rounded-xl object-contain bg-black" />
+                  <div className={`relative rounded-xl bg-black overflow-hidden ${game.phase === "vote" ? "w-1/3 min-h-28 shrink-0" : "min-h-48 h-[50vh] lg:min-h-24 lg:h-auto lg:flex-1"}`}>
+                    <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="absolute inset-0 h-full w-full object-contain" />
+                  </div>
                 )}
               </div>
             )}
@@ -92,22 +101,26 @@ function Board() {
 }
 
 function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
-  const big = "text-3xl sm:text-4xl";
+  const big = "text-3xl xl:text-4xl";
+  const entries = game.ballot?.groups.flatMap(g => g.entries) ?? [];
+  // Twenty songs still fit on one screen next to the prompt: smaller cards, more columns.
+  const dense = entries.length > 6;
+  const packed = entries.length > 12;
   const playing = game.phase !== "guess" && game.now_playing && !game.now_playing.hidden ? game.now_playing.song : null;
   const winners = game.last_result?.entries.filter(e => e.winner) ?? [];
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5 shrink-0 min-h-0">
       {game.phase === "collect" && (
         <p className={big}>
           {game.mode.rules.collect === "propose" ? "Secret songs proposed" : "Songs picked"}: <strong className="text-[#05EEFF]">{game.submission_count}</strong>
         </p>
       )}
       {game.phase === "vote" && game.ballot && (
-        <ul className="grid gap-4 sm:grid-cols-2">
-          {game.ballot.groups.flatMap(g => g.entries).map(e => (
-            <li key={e.submission_id} className="flex items-center gap-4 rounded-xl bg-zinc-800 p-3">
-              <img src={e.song.thumbnail_url} alt="" className="h-20 w-32 rounded object-cover shrink-0" />
-              <p className="text-2xl font-semibold line-clamp-2">{e.song.title}</p>
+        <ul className={`grid sm:grid-cols-2 ${packed ? "gap-1.5 lg:grid-cols-4" : dense ? "gap-2 lg:grid-cols-3" : "gap-4"}`} aria-label="Songs on the ballot">
+          {entries.map(e => (
+            <li key={e.submission_id} className={`flex items-center rounded-lg bg-zinc-800 min-w-0 ${packed ? "gap-2 p-1.5" : dense ? "gap-3 p-2" : "gap-4 p-3"}`}>
+              <img src={e.song.thumbnail_url} alt="" className={`rounded object-cover shrink-0 ${packed ? "h-8 w-14" : dense ? "h-10 w-16" : "h-20 w-32"}`} />
+              <p className={`font-semibold min-w-0 ${packed ? "text-base line-clamp-1" : dense ? "text-lg line-clamp-1" : "text-2xl line-clamp-2"}`}>{e.song.title}</p>
             </li>
           ))}
         </ul>
@@ -150,12 +163,27 @@ function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
   );
 }
 
+/**
+ * TVs get the same layout at every resolution: the root font scales with the
+ * viewport (16 px at 1280x720, 24 px at 1080p, 48 px at 4K), so rem-based type,
+ * spacing and the QR code grow together instead of leaving a small island on 4K.
+ */
+function useTvScale() {
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const before = root.style.fontSize;
+    root.style.fontSize = "clamp(16px, min(1.25vw, 2.2222vh), 64px)";
+    return () => { root.style.fontSize = before; };
+  }, []);
+}
+
 export default function BoardPage() {
+  useTvScale();
   return (
-    <div className="relative w-full min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-4 sm:px-8">
+    <main className="relative w-full min-h-screen lg:h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-4 sm:px-8">
       <SignInGate returnTo="/lobby/tv/">
         <Board />
       </SignInGate>
-    </div>
+    </main>
   );
 }

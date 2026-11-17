@@ -32,15 +32,44 @@ export function Countdown({ endsAt, offset, size = "md", label }: {
   const s = Math.ceil(ms / 1000);
   const text = s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}`;
   const urgent = s <= 5;
+  // Screen readers hear milestones, not every second.
+  const milestone = MILESTONES.find(m => s <= m && (m === 0 || s > 0));
   return (
-    <span
-      role="timer"
-      aria-label={`${label ?? "Time left"}: ${s} seconds`}
-      className={`font-mono font-extrabold tabular-nums ${size === "xl" ? "text-7xl sm:text-9xl" : "text-3xl"} ${urgent ? "text-[#FF0048]" : "text-[#05EEFF]"}`}
-    >
-      {text}
-    </span>
+    <>
+      <span
+        role="timer"
+        aria-label={`${label ?? "Time left"}: ${s} seconds`}
+        className={`font-mono font-extrabold tabular-nums ${size === "xl" ? "text-7xl xl:text-8xl" : "text-3xl"} ${urgent ? "text-[#FF0048]" : "text-[#05EEFF]"}`}
+      >
+        {text}
+      </span>
+      <span className="sr-only" aria-live="polite" aria-atomic="true">
+        {milestone === undefined ? "" : milestone === 0 ? "Time is up." : `${milestone} seconds left.`}
+      </span>
+    </>
   );
+}
+
+const MILESTONES = [0, 5, 10, 30];
+
+/**
+ * One polite live region per game view: announces each new phase, and the round's
+ * answer or winners when results arrive, without re-reading the whole card.
+ */
+export function GameAnnouncer({ game, name }: { game: GameView; name: NameFn }) {
+  const result = game.last_result;
+  let text = `${roundLabel(game)}. ${phaseName(game)}.`;
+  if (game.phase === "reveal" && result) {
+    text += ` It was ${result.answer ?? result.entries[0]?.song.title ?? "a mystery"}.`;
+    text += result.guesses.length ? ` ${result.guesses.length} named it; first was ${name(result.guesses[0].user_id, result.guesses[0].nickname)}.` : " Nobody named it.";
+  } else if (result && game.mode.rules.collect === "pick" && game.phase !== "ended") {
+    const winners = result.entries.filter(e => e.winner);
+    if (winners.length) text += ` Round ${result.round} winner: ${winners.map(w => `${w.song.title}, picked by ${name(w.submitted_by_user_id, w.submitted_by_nickname)}`).join("; ")}.`;
+  }
+  if (game.phase === "ended" && game.scoreboard[0]) {
+    text += game.scoreboard[0].points > 0 ? ` ${name(game.scoreboard[0].user_id, game.scoreboard[0].nickname)} wins with ${game.scoreboard[0].points} points.` : " No points this time.";
+  }
+  return <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{text}</p>;
 }
 
 export const phaseTitle: Record<Phase, string> = {
@@ -72,18 +101,21 @@ export function Scoreboard({ game, ownerId, me, large = false }: {
   const rows = game.scoreboard;
   // Shared points share a rank: 1, 2, 2, 4.
   const ranks = rows.map(row => rows.findIndex(r => r.points === row.points) + 1);
+  // A TV board fits up to 20 players without scrolling: tighter rows, then two columns.
+  const crowded = large && rows.length > 8;
+  const row = large ? (crowded ? "py-1 text-lg" : "py-2 text-2xl") : "py-2 text-sm";
   return (
-    <section aria-label="Scoreboard" className="bg-zinc-900 rounded-xl border border-zinc-800 p-4">
+    <section aria-label="Scoreboard" className={`bg-zinc-900 rounded-xl border border-zinc-800 p-4 ${large ? "min-h-0 overflow-hidden" : ""}`}>
       <h3 className={`font-semibold mb-2 ${large ? "text-3xl" : ""}`}>Scoreboard</h3>
-      {rows.length === 0 ? <p className="text-sm text-zinc-500">No players yet.</p> : (
-        <ol className={large ? "space-y-2" : "space-y-1"}>
-          {rows.map((row, i) => {
+      {rows.length === 0 ? <p className="text-sm text-zinc-400">No players yet.</p> : (
+        <ol className={large ? (crowded && rows.length > 12 ? "grid grid-cols-2 gap-1" : crowded ? "space-y-1" : "space-y-2") : "space-y-1"}>
+          {rows.map((entry, i) => {
             const rank = ranks[i];
             return (
-              <li key={row.user_id} className={`flex items-center gap-3 rounded-lg px-3 ${large ? "py-3 text-2xl" : "py-2 text-sm"} ${row.user_id === me ? "bg-[#5C172E]" : "bg-zinc-800"} ${row.active ? "" : "opacity-50"}`}>
+              <li key={entry.user_id} className={`flex items-center gap-3 rounded-lg px-3 ${row} ${entry.user_id === me ? "bg-[#5C172E]" : "bg-zinc-800"} ${entry.active ? "" : "text-zinc-400"}`}>
                 <span className="w-6 text-zinc-400 tabular-nums">{rank}</span>
-                <span className="flex-1 min-w-0 truncate">{playerName(row.user_id, row.nickname, me)}{row.user_id === ownerId && <span className="text-zinc-400"> · host</span>}{!row.active && " (left)"}</span>
-                <span className="font-mono font-bold tabular-nums">{row.points}</span>
+                <span className="flex-1 min-w-0 truncate">{playerName(entry.user_id, entry.nickname, me)}{entry.user_id === ownerId && <span className="text-zinc-400"> · host</span>}{!entry.active && " (left)"}</span>
+                <span className="font-mono font-bold tabular-nums">{entry.points}<span className="sr-only"> points</span></span>
               </li>
             );
           })}

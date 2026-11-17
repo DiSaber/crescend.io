@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import SongPicker from "../SongPicker";
-import { Countdown, GameImage, Scoreboard, SongRow, phaseName, playerName, roundLabel, type NameFn } from "./bits";
+import { Countdown, GameAnnouncer, GameImage, Scoreboard, SongRow, phaseName, playerName, roundLabel, type NameFn } from "./bits";
 import { advanceGame, castVote, endGame, guessTitle, submitSong, type GameMutation, type GameView, type RoundResult } from "../../lib/game";
 import { newRequestId, QueueError } from "../../lib/queue";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
@@ -77,6 +77,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
   return (
     <section aria-label="Game" className="w-full max-w-4xl flex flex-col gap-4">
       <div className="bg-zinc-900 p-4 sm:p-6 rounded-xl border border-[#5C172E] flex flex-col gap-4">
+        <GameAnnouncer game={game} name={name} />
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-wider text-zinc-400">{roundLabel(game)}</p>
@@ -175,7 +176,7 @@ export default function GamePanel({ session, state, onNewGame, player }: {
           <div>
             <p className="text-xs text-zinc-400 mb-1">Now playing{game.up_next_count > 0 && ` · ${game.up_next_count} more decided`}</p>
             <SongRow song={playing.song!} note={`picked by ${name(playing.submitted_by_user_id, playing.submitted_by_nickname)}`} />
-            {!isHost && <p className="mt-1 text-xs text-zinc-500">Sound plays on the host&apos;s device.</p>}
+            {!isHost && <p className="mt-1 text-xs text-zinc-400">Sound plays on the host&apos;s device.</p>}
           </div>
         )}
         {game.phase === "play" && !playing && <p className="text-sm text-zinc-400">Waiting for the song to start…</p>}
@@ -269,8 +270,16 @@ function RoundResults({ result, name }: { result: RoundResult; name: NameFn }) {
 
 function Reveal({ result, name, me }: { result: RoundResult; name: NameFn; me: string | undefined }) {
   const song = result.entries[0];
+  // The last correct guess closes the round at once, so that guesser lands here
+  // without ever seeing the guess-phase banner: repeat it.
+  const mine = result.guesses.find(g => g.user_id === me);
   return (
     <div className="flex flex-col gap-3">
+      {mine && (
+        <p className="rounded-lg bg-green-950 border border-green-700 p-4 text-lg font-semibold text-green-300" role="status">
+          Correct! +{mine.points} points{result.guesses.length > 1 ? ` (#${mine.rank})` : ""}
+        </p>
+      )}
       <p className="text-sm text-zinc-400">Round {result.round}: it was</p>
       <p className="text-3xl font-extrabold text-[#05EEFF]">{result.answer ?? song?.song.title}</p>
       {song && <SongRow song={song.song} note={`proposed by ${name(song.submitted_by_user_id, song.submitted_by_nickname)}${song.points ? ` · +${song.points}` : ""}`} />}

@@ -24,6 +24,12 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+/* Keyboard focus stays visible on every control, over any card colour. */
+:focus-visible {
+  outline: 3px solid #05EEFF;
+  outline-offset: 2px;
+}
+
 @keyframes multiPulse {
   0%   { border-color: #FF0000; } /* red */
   25%  { border-color: #9406C7; } /* orange */

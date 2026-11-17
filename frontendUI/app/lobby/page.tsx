@@ -130,11 +130,12 @@ function Lobby() {
 
   return (
     <div className="w-full flex flex-col items-center gap-8 py-10">
+      <h1 className="sr-only">Session {lobby.join_code}</h1>
       <div className="flex flex-col md:flex-row gap-6 items-center md:items-start w-full max-w-4xl">
         <div className="bg-zinc-900 p-6 rounded-xl border border-zinc-800 text-center">
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
-          <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-500"}`}>{live ? "● live" : "○ connecting"}</p>
+          <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-400"}`}>{live ? "● live" : "○ connecting"}</p>
           <a href="/lobby/tv/" target="_blank" rel="noopener" className="mt-1 inline-flex min-h-11 items-center text-sm text-zinc-300 underline hover:text-white">Board view for a TV ↗</a>
           {isHost && (
             <div className="mt-4 flex flex-col items-center gap-2">
@@ -258,7 +259,7 @@ function Lobby() {
       ) : (
         <div className="w-full max-w-4xl rounded-xl border border-dashed border-zinc-700 bg-zinc-900/70 p-8 text-center">
           <p className="font-semibold text-zinc-200">{queue ? "Queue is empty" : "Loading queue…"}</p>
-          <p className="mt-2 text-sm text-zinc-500">
+          <p className="mt-2 text-sm text-zinc-400">
             Search for a song or paste a YouTube link above to start playback
             {isHost ? " on this device." : " on the host's device."}
           </p>
@@ -271,7 +272,7 @@ function Lobby() {
           <ol className="space-y-2">
             {upcoming.map((entry, index) => (
               <li key={entry.id} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-800 p-2">
-                <span className="w-6 text-center text-sm text-zinc-500">{index + 1}</span>
+                <span className="w-6 text-center text-sm text-zinc-400">{index + 1}</span>
                 <img src={entry.video.thumbnail_url} alt="" className="h-12 w-20 rounded object-cover" />
                 <div className="min-w-0 flex-1 basis-32">
                   <p className="line-clamp-2 text-sm font-medium">{entry.video.title}</p>
@@ -316,17 +317,17 @@ function VotingPolicy({
       </select>
       {mode === "fixed" && <input aria-label="Required skip votes" type="number" min={1} max={2147483647} step={1} value={count} disabled={disabled} onChange={e => setCount(e.target.value)} className="min-h-11 w-24 rounded bg-zinc-800 border border-zinc-700 px-2" />}
       <button type="submit" disabled={disabled || (mode === "fixed" && !valid)} className="min-h-11 px-3 underline disabled:opacity-50">Apply policy</button>
-      <span className="text-zinc-500">{voting.active_guest_count} guests; {voting.effective_threshold === null ? "no removals without guests" : `${voting.effective_threshold} votes needed`}</span>
+      <span className="text-zinc-400">{voting.active_guest_count} guests; {voting.effective_threshold === null ? "no removals without guests" : `${voting.effective_threshold} votes needed`}</span>
     </form>
   );
 }
 
 export default function LobbyPage() {
   return (
-    <div className="relative w-full min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-6">
+    <main className="relative w-full min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-6">
       <SignInGate returnTo="/lobby/">
         <Lobby />
       </SignInGate>
-    </div>
+    </main>
   );
 }
