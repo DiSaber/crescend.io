@@ -23,10 +23,25 @@ pub struct GameModesResponse {
     pub modes: Vec<GameModeView>,
 }
 
+/// A mode built on the spot: a name and one choice per rule.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CustomMode {
+    /// 1-40 characters after trimming.
+    pub name: String,
+    pub rules: Rules,
+}
+
+/// Exactly one of `mode_id` and `custom`; `settings` overrides the mode's defaults
+/// and must satisfy its served schema.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartGameRequest {
-    pub mode_id: String,
+    pub mode_id: Option<String>,
+    pub custom: Option<CustomMode>,
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ToSchema)]
@@ -91,7 +106,8 @@ pub struct BallotEntry {
     pub song: GameSong,
     /// The caller submitted this song.
     pub mine: bool,
-    /// The caller may vote for it (own songs are excluded unless `self_vote`).
+    /// The caller may vote for it: own songs are excluded unless `self_vote`, and byes
+    /// in pair ballots take no votes.
     pub votable: bool,
 }
 
@@ -104,7 +120,9 @@ pub struct BallotGroup {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BallotView {
     pub groups: Vec<BallotGroup>,
-    pub votes_per_player: i64,
+    /// Votes the caller can cast on this ballot: the smaller of `votes_per_player`
+    /// and the songs they may vote for, or one per pair in pair ballots.
+    pub votes_allowed: i64,
     pub my_votes: Vec<String>,
 }
 

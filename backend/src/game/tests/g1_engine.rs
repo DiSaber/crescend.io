@@ -231,19 +231,18 @@ async fn stopping_keeps_scores_and_a_new_start_replaces_the_old_game() {
     let (guest, gm) = &lobby.guests[0];
     let first = f.start(&lobby, "party").await.game.unwrap().id;
     assert!(matches!(
-        f.database
-            .start_game(&lobby.host, &lobby.host_membership, "party", || f.now())
-            .await,
+        f.start_with(&lobby, "party", serde_json::json!({})).await,
         Err(GameError::GameRunning)
     ));
+    let party = crate::game::modes::preset("party").unwrap();
     assert!(matches!(
-        f.database.start_game(guest, gm, "party", || f.now()).await,
+        f.database
+            .start_game(guest, gm, "party", &(party.definition)(), || f.now())
+            .await,
         Err(GameError::HostRequired)
     ));
     assert!(matches!(
-        f.database
-            .start_game(&lobby.host, &lobby.host_membership, "nope", || f.now())
-            .await,
+        f.start_with(&lobby, "nope", serde_json::json!({})).await,
         Err(GameError::ModeUnavailable)
     ));
     f.submit(guest, gm, "guestaaa01").await.unwrap();

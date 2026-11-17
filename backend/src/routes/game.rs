@@ -106,9 +106,10 @@ pub(super) async fn start(
 ) -> Result<Json<GameMutationResponse>, GameError> {
     let id = membership(path)?;
     let payload: StartGameRequest = json(request, BODY_LIMIT).await?;
+    let (mode_id, definition) = crate::game::resolve(&payload)?;
     let game = app
         .database
-        .start_game(&user, &id, &payload.mode_id, || (app.auth.clock)())
+        .start_game(&user, &id, &mode_id, &definition, || (app.auth.clock)())
         .await?;
     publish(&app, true, &game);
     Ok(Json(GameMutationResponse {
@@ -256,6 +257,16 @@ impl GameError {
             Self::TooLarge => (413, "request_too_large", "Game request is too large."),
             Self::MediaType => (415, "unsupported_media_type", "JSON content type required."),
             Self::ModeUnavailable => (404, "game_mode_unavailable", "Game mode unavailable."),
+            Self::InvalidRules => (
+                400,
+                "invalid_game_rules",
+                "That combination of rules cannot run together.",
+            ),
+            Self::InvalidSettings => (
+                400,
+                "invalid_game_settings",
+                "Settings must match the mode's settings schema.",
+            ),
             Self::GameRunning => (
                 409,
                 "game_running",

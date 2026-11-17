@@ -7,12 +7,7 @@ use super::Database;
 use super::queue::{BoundQueue, Permission, authorize, check_deadlines, increment};
 use crate::{
     auth::AuthenticatedUser,
-    game::{
-        GameError,
-        modes::{Definition, preset},
-        random_id,
-        rules::Entry,
-    },
+    game::{GameError, modes::Definition, random_id, rules::Entry},
     models::{
         game::*,
         lobby::LobbyId,
@@ -167,18 +162,27 @@ async fn round_votes(tx: &mut Tx<'_>, game: &Game) -> Result<Vec<(String, i64)>,
     .await?)
 }
 
-fn may_vote(game: &Game, entry: &Entry, user: i64) -> bool {
-    game.definition.settings.self_vote || entry.user_id != user
+fn may_vote(game: &Game, groups: &[Vec<Entry>], entry: &Entry, user: i64) -> bool {
+    let group = groups
+        .iter()
+        .find(|g| g.contains(entry))
+        .map(Vec::as_slice)
+        .unwrap_or(std::slice::from_ref(entry));
+    game.definition.rules.ballot.imp().eligible(
+        group,
+        entry,
+        user,
+        game.definition.settings.self_vote,
+    )
 }
 
 /// Votes this account still has to cast before it is done with the ballot.
 fn votes_needed(game: &Game, groups: &[Vec<Entry>], user: i64) -> i64 {
-    let votable = groups
-        .iter()
-        .flatten()
-        .filter(|entry| may_vote(game, entry, user))
-        .count() as i64;
-    votable.min(game.definition.settings.votes_per_player)
+    game.definition.rules.ballot.imp().needed(
+        groups,
+        &|entry| may_vote(game, groups, entry, user),
+        game.definition.settings.votes_per_player,
+    )
 }
 
 /// True when every active member has done everything the phase allows.
@@ -346,7 +350,7 @@ async fn close_round(
         *votes.entry(submission).or_insert(0) += 1;
     }
     let winners = rules.winner.imp().winners(groups, &votes);
-    let points = rules.scoring.imp().round_points(entries, &winners, &votes);
+    let points = rules.scoring.imp().round_points(groups, &winners, &votes);
     for (user, amount) in &points {
         add_points(tx, game, *user, *amount).await?;
     }
@@ -500,13 +504,19 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
             .map(|(submission, _)| submission)
             .collect();
         let mut out = Vec::with_capacity(groups.len());
-        for group in groups {
+        for group in groups.clone() {
             let mut entries = Vec::with_capacity(group.len());
             for entry in group {
                 entries.push(BallotEntry {
                     song: song(tx, &entry.id).await?.0,
                     mine: entry.user_id == user,
-                    votable: may_vote(game, &entry, user),
+                    votable: may_vote(game, &groups, &entry, user)
+                        && game.definition.rules.ballot.imp().allows(
+                            &groups,
+                            &[],
+                            &entry.id,
+                            game.definition.settings.votes_per_player,
+                        ),
                     submission_id: entry.id,
                 });
             }
@@ -514,7 +524,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
         }
         Some(BallotView {
             groups: out,
-            votes_per_player: game.definition.settings.votes_per_player,
+            votes_allowed: votes_needed(game, &groups, user),
             my_votes,
         })
     } else {
@@ -662,17 +672,11 @@ impl Database {
         user: &AuthenticatedUser,
         membership: &str,
         mode_id: &str,
+        definition: &Definition,
         clock: impl Fn() -> i64,
     ) -> Result<GameSnapshot, GameError> {
         let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
         let bound = authorize(&mut tx, user, membership, Permission::Host, &clock).await?;
-        let definition = (preset(mode_id)
-            .ok_or(GameError::ModeUnavailable)?
-            .definition)();
-        definition
-            .rules
-            .validate()
-            .map_err(|_| GameError::ModeUnavailable)?;
         let (existing, _) = current(&mut tx, &bound, clock()).await?;
         if existing.is_some_and(|g| g.status == GameStatus::Running) {
             return Err(GameError::GameRunning);
@@ -879,19 +883,24 @@ impl Database {
             .find(|e| e.id == submission)
             .cloned()
             .ok_or(GameError::SubmissionUnavailable)?;
-        if !may_vote(&game, &entry, user.id) {
+        if !may_vote(&game, &groups, &entry, user.id) {
             return Err(GameError::SelfVote);
         }
         let votes = round_votes(&mut tx, &game).await?;
-        let mine: Vec<&String> = votes
-            .iter()
+        let mine: Vec<String> = votes
+            .into_iter()
             .filter(|(_, voter)| *voter == user.id)
             .map(|(s, _)| s)
             .collect();
-        let voted = if mine.iter().any(|s| *s == submission) {
+        let voted = if mine.iter().any(|s| s == submission) {
             false
         } else {
-            if mine.len() as i64 >= game.definition.settings.votes_per_player {
+            if !game.definition.rules.ballot.imp().allows(
+                &groups,
+                &mine,
+                submission,
+                game.definition.settings.votes_per_player,
+            ) {
                 return Err(GameError::VoteLimit);
             }
             sqlx::query("INSERT INTO game_votes(submission_id, user_id, game_id, round) VALUES (?, ?, ?, ?)")
