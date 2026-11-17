@@ -3,17 +3,25 @@ export class SignedOutError extends Error {
   constructor() { super("Sign in again to continue."); }
 }
 export type StopReason = "signed-out" | "uncertain";
+export const CODE_HINT = "Session codes are six letters or numbers, like A1B2C3.";
 type Environment = {
   fetch: typeof fetch;
   lock: <T>(fn: () => Promise<T>) => Promise<T>;
   publish: (reason: StopReason) => void;
   isStopped?: () => boolean;
+  /**
+   * Whether the browser holds a refresh cookie at all. Asked once before the first
+   * refresh so a first visit does not send a refresh that can only 401 (and log a
+   * console error). Missing or failing: refresh as usual.
+   */
+  hasSession?: () => Promise<boolean>;
 };
 export class AuthCoordinator {
   private env: Environment;
   private accessToken: string | undefined;
   private refreshing: Promise<string | undefined> | undefined;
   private stopped = false;
+  private checkedSession = false;
   private epoch = 0;
   private listeners = new Set<() => void>();
   constructor(env: Environment) { this.env = env; }
@@ -36,6 +44,13 @@ export class AuthCoordinator {
     const epoch = this.epoch;
     this.refreshing = this.env.lock(async () => {
       if (!this.allowed() || epoch !== this.epoch) return undefined;
+      if (!this.checkedSession && !this.accessToken && this.env.hasSession) {
+        this.checkedSession = true;
+        const present = await this.env.hasSession().catch(() => true);
+        if (!this.allowed() || epoch !== this.epoch) return undefined;
+        // Same outcome as a 401 refresh, without the request.
+        if (!present) { this.stop("signed-out", true); return undefined; }
+      }
       try {
         const response = await this.env.fetch("/api/auth/refresh", {
           method: "POST", credentials: "same-origin", headers: { "X-CSRF-Protection": "1" },
@@ -71,16 +86,21 @@ export class AuthCoordinator {
    * Deliberately sign in as a guest (docs/guest-join.md): like a new Google login it
    * clears an earlier stop, then takes the shared lock so it never races a refresh.
    * The server reuses this browser's guest account when its guest cookie is present.
+   * With `joinCode`, the server first checks an active lobby has it, so a wrong code
+   * creates no account.
    */
-  async guestSignIn() {
+  async guestSignIn(joinCode?: string) {
     this.stopped = false;
     this.epoch++;
     this.accessToken = undefined;
     const epoch = this.epoch;
     const token = await this.env.lock(async () => {
-      const response = await this.env.fetch("/api/auth/guest", {
+      const query = joinCode === undefined ? "" : "?" + new URLSearchParams({ join_code: joinCode });
+      const response = await this.env.fetch("/api/auth/guest" + query, {
         method: "POST", credentials: "same-origin", headers: { "X-CSRF-Protection": "1" },
       });
+      if (response.status === 404) throw new Error("No active session has that code. Check it and try again.");
+      if (response.status === 400 && joinCode !== undefined) throw new Error(CODE_HINT);
       if (response.status === 429) throw new Error("Too many new guests from this network right now. Try again later.");
       if (!response.ok) throw new Error(`Couldn't join as a guest (${response.status}). Try again.`);
       const body = await response.json();

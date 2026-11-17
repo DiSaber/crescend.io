@@ -38,14 +38,54 @@ export async function getCurrent(signal?: AbortSignal): Promise<CurrentLobby> {
   return response.json();
 }
 
-/** Same rules as the server: 1-24 characters after trimming, no control characters. */
+/** Same rules as the server (backend nicknames::normalize): 1-24 user-perceived characters. */
 export const NICKNAME_MAX = 24;
+const MAX_SCALARS_PER_CHAR = 12;
+/** Whitespace runs collapse to one space, as the server stores the name. */
+export const normalizeNickname = (raw: string) => raw.trim().split(/\s+/).join(" ");
+// Emoji pictographs (approximates Extended_Pictographic, like the server).
+const PICTOGRAPHIC = /[\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u21ff\u2300-\u23ff\u24c2\u25a0-\u27bf\u2900-\u297f\u2b00-\u2bff\u3030\u303d\u3297\u3299\u{1F000}-\u{1FAFF}]/u;
+const FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb\ufe00-\ufe0f]/u;
+/** User-perceived characters (grapheme clusters): a family emoji counts once. */
+export function nicknameLength(name: string): number {
+  return graphemes(name).length;
+}
+function graphemes(name: string): string[] {
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(name), s => s.segment);
+  }
+  return Array.from(name);
+}
+function invisible(raw: string): boolean {
+  const chars = Array.from(raw);
+  return chars.some((c, i) => {
+    const before = chars[i - 1];
+    const after = chars[i + 1];
+    // A zero-width joiner only inside an emoji sequence (👨‍👩‍👧, 🏳️‍🌈).
+    if (c === "\u200d") return !(before && (PICTOGRAPHIC.test(before) || before === "\ufe0f" || before === "\u{E007F}") && after && PICTOGRAPHIC.test(after));
+    // A presentation selector only right after an emoji or a keycap base.
+    if (c === "\ufe0e" || c === "\ufe0f") return !(before && (PICTOGRAPHIC.test(before) || /[0-9#*]/.test(before)));
+    return FORBIDDEN.test(c);
+  });
+}
 export function nicknameProblem(raw: string): string | undefined {
-  const name = raw.trim().split(/\s+/).join(" ");
+  const name = normalizeNickname(raw);
   if (!name) return "Pick a nickname.";
-  if (Array.from(name).length > NICKNAME_MAX) return `Nicknames are at most ${NICKNAME_MAX} characters.`;
-  if (/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/.test(raw)) return "Nicknames can't contain control characters.";
+  if (invisible(raw)) return "Nicknames can't contain invisible or control characters.";
+  const chars = graphemes(name);
+  if (chars.length > NICKNAME_MAX) return `Nicknames are at most ${NICKNAME_MAX} characters.`;
+  if (chars.some(c => Array.from(c).length > MAX_SCALARS_PER_CHAR)) return "That nickname has too many stacked marks.";
   return undefined;
+}
+
+/**
+ * The six-character code inside whatever was typed or pasted: spaces, dashes and
+ * other separators drop out, letters are upper-cased, and a pasted join link
+ * (".../join/?code=ABC123") gives its code.
+ */
+export function normalizeCode(raw: string): string {
+  const linked = /[?&]code=([^&#\s]*)/i.exec(raw);
+  return (linked ? decodeURIComponent(linked[1]) : raw).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 }
 
 /** Create a lobby, or return the caller's existing one on 409. */
@@ -68,11 +108,11 @@ export async function joinLobby(joinCode: string, nickname?: string): Promise<Cu
     headers: { "Content-Type": "application/json" },
     body,
   });
-  if (response.status === 404) throw new Error("No active lobby has that code.");
+  if (response.status === 404) throw new Error("No active session has that code. Check it and try again.");
   if (response.status === 409) {
     const current = await getCurrent();
     if (!current.membership_id) throw new Error("Your session changed. Try joining again.");
-    if (!window.confirm(`You're hosting another session (${current.lobby.join_code}). End it for everyone and join this one?`)) {
+    if (!window.confirm(`You're hosting another session (${current.lobby.join_code}). End that session for everyone and join this one?`)) {
       throw new Error("Your current session is still active.");
     }
     await leaveLobby(current.membership_id);
@@ -93,6 +133,16 @@ export async function leaveLobby(membershipId: string): Promise<void> {
   if (response.status !== 204) throw new Error(await errorMessage(response));
 }
 
+/** sessionStorage key the join page sets and the lobby page reads once:
+ * "You're 'Kat 2' because 'Kat' is taken." */
+export const JOIN_NOTICE_KEY = "crescend-join-notice";
+
+/** Host only: take a member out of the session, like their leaving. They can rejoin. */
+export async function removeMember(membershipId: string, userId: string): Promise<void> {
+  const response = await apiFetch(`/api/lobbies/memberships/${membershipId}/members/${userId}`, { method: "DELETE" });
+  if (response.status !== 204) throw new Error(await errorMessage(response));
+}
+
 export async function fetchMetadata(url: string): Promise<VideoMetadata> {
   const response = await fetch("/api/youtube/metadata", {
     method: "POST",
@@ -106,7 +156,7 @@ export async function fetchMetadata(url: string): Promise<VideoMetadata> {
 
 export type LobbyEvent =
   | { event: "sync_required" | "lobby_changed"; data: { revision: string } }
-  | { event: "membership_ended"; data: { reason: "expired" | "left" | "closed" } }
+  | { event: "membership_ended"; data: { reason: "expired" | "left" | "closed" | "removed" } }
   | { event: "auth_expired"; data: Record<string, never> };
 
 /**

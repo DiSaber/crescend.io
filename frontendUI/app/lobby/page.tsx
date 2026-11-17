@@ -11,6 +11,8 @@ import GamePanel from "../components/game/GamePanel";
 import GameSetup from "../components/game/GameSetup";
 import HostGamePlayer from "../components/game/HostGamePlayer";
 import { youTubeVideoUrl } from "../lib/youtube";
+import { account, logout, type Account } from "../lib/auth";
+import { JOIN_NOTICE_KEY, removeMember, type Member } from "../lib/lobby";
 import { QueueSession } from "../lib/queue-state";
 import { type AdvanceReason, type QueueEntry, type QueueView } from "../lib/queue";
 
@@ -22,10 +24,61 @@ function Lobby() {
   const lobby = membership?.lobby;
   const [link, setLink] = useState("");
   const [setupOpen, setSetupOpen] = useState(false);
+  const [me, setMe] = useState<Account | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [memberError, setMemberError] = useState<string | null>(null);
   useEffect(() => { session.start(); return () => session.stop(); }, [session]);
+  useEffect(() => {
+    let active = true;
+    account().then((value) => { if (active) setMe(value ?? null); }).catch(() => {});
+    // Set by the join page when the name came back with a suffix.
+    try {
+      const raw = sessionStorage.getItem(JOIN_NOTICE_KEY);
+      sessionStorage.removeItem(JOIN_NOTICE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed.wanted === "string" && typeof parsed.got === "string") {
+        queueMicrotask(() => setNotice(`You're "${parsed.got}" because "${parsed.wanted}" is taken.`));
+      }
+    } catch { /* No notice. */ }
+    return () => { active = false; };
+  }, []);
 
   async function leave() {
+    if (session.isHost()) {
+      const people = (membership?.lobby?.members.length ?? 1) - 1;
+      const others = people === 1 ? "the 1 other person" : `all ${people} other people`;
+      const warning = state.game?.game?.status === "running"
+        ? `A game is in progress. Ending the session stops the game for everyone and sends ${others} out. The code stops working. End the session for everyone?`
+        : `End the session for everyone? This sends ${others} out and the code stops working.`;
+      if (!window.confirm(warning)) return;
+    }
     if (await session.leave()) router.push("/");
+  }
+  async function signOut() {
+    if (session.isHost() && !window.confirm(
+      "You're hosting this session. Signing out leaves it running for everyone, but you can't control it " +
+      "(or play its music) from this browser until you sign in again. Sign out?",
+    )) return;
+    await logout().catch(() => {});
+    router.push("/");
+  }
+  async function remove(member: Member) {
+    const id = membership?.membership_id;
+    if (!id || !window.confirm(
+      `Remove ${member.nickname} from the session? Their skip votes stop counting and the game stops waiting for them. ` +
+      "They keep their points, and they can rejoin with the code.",
+    )) return;
+    setRemoving(member.user_id);
+    setMemberError(null);
+    try {
+      await removeMember(id, member.user_id);
+      await session.sync();
+    } catch (err) {
+      setMemberError((err as Error).message);
+    } finally {
+      setRemoving(null);
+    }
   }
   async function submitLink(text: string) {
     const url = youTubeVideoUrl(text);
@@ -59,9 +112,15 @@ function Lobby() {
   if (!lobby) return (
     <div className="w-full max-w-md bg-zinc-900 p-8 rounded-xl border border-zinc-800 text-center">
       <p className="text-zinc-300 mb-6">{ended ?? "You're not in a session right now."}</p>
-      <div className="flex gap-4">
-        <a href="/create/" className="flex-1 p-3 rounded-lg bg-purple-600 font-semibold">Create</a>
-        <a href="/join/" className="flex-1 p-3 rounded-lg bg-purple-600 font-semibold">Join</a>
+      <div className="flex flex-col gap-3">
+        <a href="/join/" className="flex min-h-12 items-center justify-center p-3 rounded-lg bg-purple-600 hover:bg-purple-700 font-semibold">
+          {ended ? "Join another session" : "Join with a code"}
+        </a>
+        {me && !me.guest && (
+          <a href="/create/" className="flex min-h-12 items-center justify-center p-3 rounded-lg border border-zinc-600 hover:border-zinc-400 font-semibold text-zinc-200">
+            Host a session
+          </a>
+        )}
       </div>
       <button onClick={() => void session.sync()} className="min-h-11 px-4 underline">Check session again</button>
       {error && <p role="alert" className="text-red-400">{error}</p>}
@@ -131,6 +190,12 @@ function Lobby() {
   return (
     <div className="w-full flex flex-col items-center gap-8 py-10">
       <h1 className="sr-only">Session {lobby.join_code}</h1>
+      {notice && (
+        <div role="status" className="w-full max-w-4xl flex items-center justify-between gap-3 rounded-xl border border-amber-700 bg-amber-950/60 px-4 py-2 text-sm text-amber-100">
+          <span className="min-w-0 break-words">{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} className="min-h-11 min-w-11 shrink-0 underline">OK</button>
+        </div>
+      )}
       <div className="flex flex-col md:flex-row gap-6 items-center md:items-start w-full max-w-4xl">
         <div className="bg-zinc-900 p-6 rounded-xl border border-zinc-800 text-center">
           <p className="text-zinc-400 text-sm">Session code</p>
@@ -156,13 +221,27 @@ function Lobby() {
           <p className="text-zinc-400 text-sm mb-2">In this session ({lobby.members.length})</p>
           <ul className="flex flex-wrap gap-2">
             {lobby.members.map((m) => (
-              <li key={m.user_id} className={`px-3 py-1 rounded-full text-sm ${m.role === "owner" ? "bg-[#5C172E]" : "bg-zinc-800"}`}>
-                {m.nickname}
-                {m.role === "owner" && <span className="text-zinc-400"> · host</span>}
-                {m.user_id === userId && " (you)"}
+              <li key={m.user_id} className={`flex max-w-full items-center gap-1 rounded-full text-sm ${isHost && m.role !== "owner" ? "pl-3 pr-1" : "px-3 py-1"} ${m.role === "owner" ? "bg-[#5C172E]" : "bg-zinc-800"}`}>
+                <span className="min-w-0 break-words">
+                  {m.nickname}
+                  {m.role === "owner" && <span className="text-zinc-400"> · host</span>}
+                  {m.user_id === userId && " (you)"}
+                </span>
+                {isHost && m.role !== "owner" && (
+                  <button
+                    type="button"
+                    onClick={() => void remove(m)}
+                    disabled={removing !== null}
+                    aria-label={`Remove ${m.nickname}`}
+                    className="min-h-11 shrink-0 rounded-full px-3 text-xs text-zinc-400 hover:bg-red-950 hover:text-red-300 disabled:opacity-50"
+                  >
+                    {removing === m.user_id ? "Removing…" : "Remove"}
+                  </button>
+                )}
               </li>
             ))}
           </ul>
+          {memberError && <p role="alert" className="mt-2 text-sm text-red-400">{memberError}</p>}
           {isHost && queue && (
             <VotingPolicy
               key={`${queue.voting.mode}-${queue.voting.fixed_count}`}
@@ -171,9 +250,17 @@ function Lobby() {
               onChange={(policy) => session.policy(policy).catch(() => {})}
             />
           )}
-          <button onClick={leave} disabled={!!busy} className="mt-4 min-h-11 text-sm text-zinc-400 hover:text-red-400 underline">
-            Leave session (closes it for everyone if you&apos;re the host)
-          </button>
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <button onClick={leave} disabled={!!busy} className="min-h-11 text-sm text-zinc-400 hover:text-red-400 underline">
+              {isHost ? "End session for everyone" : "Leave session"}
+            </button>
+            {me && !me.guest && (
+              <span className="text-sm text-zinc-400">
+                Signed in with Google ·{" "}
+                <button type="button" onClick={() => void signOut()} className="min-h-11 underline hover:text-white">Sign out</button>
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -325,7 +412,7 @@ function VotingPolicy({
 export default function LobbyPage() {
   return (
     <main className="relative w-full min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-black to-[#1a0b29] text-white px-6">
-      <SignInGate returnTo="/lobby/">
+      <SignInGate returnTo="/lobby/" joinFirst message="Join a session with its code. Hosting one needs Google.">
         <Lobby />
       </SignInGate>
     </main>

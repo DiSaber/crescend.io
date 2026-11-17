@@ -54,3 +54,41 @@ test('nickname rules match the server', () => {
   assert.match(nicknameProblem('a\u0007b') ?? '', /control/);
   assert.match(nicknameProblem('rtl‮x') ?? '', /control/);
 });
+
+test('emoji built with joiners and selectors count as one character each', async () => {
+  const { nicknameLength, normalizeCode } = await import('../../app/lib/lobby.ts');
+  const family = '👨‍👩‍👧‍👦';
+  const rainbow = '🏳️‍🌈';
+  for (const name of [family, `${rainbow} Kat`, 'Kat ❤️', '🇺🇸🇯🇵', family.repeat(24)]) {
+    assert.equal(nicknameProblem(name), undefined, name);
+  }
+  assert.equal(nicknameLength(family.repeat(7)), 7);
+  assert.match(nicknameProblem(family.repeat(25)) ?? '', /at most 24/);
+  for (const bad of ['​', 'Ann​ie', 'Kat‍', 'A‍nn', 'Kat️', 'iso⁦x']) {
+    assert.match(nicknameProblem(bad) ?? '', /invisible/, JSON.stringify(bad));
+  }
+  assert.equal(normalizeCode(' abc 123 '), 'ABC123');
+  assert.equal(normalizeCode('ABC-123'), 'ABC123');
+  assert.equal(normalizeCode('https://crescend.io/join/?code=abc123'), 'ABC123');
+  assert.equal(normalizeCode('A.B,C!1@2#3$4'), 'ABC123');
+});
+
+test('a browser with no session cookie skips the refresh that would 401', async () => {
+  const f = setup(() => { throw new Error('no request expected'); });
+  let asked = 0;
+  const auth = new AuthCoordinator({ ...f.env, hasSession: async () => { asked++; return false; } });
+  assert.equal(await auth.getToken(), undefined);
+  assert.deepEqual(f.paths, [], 'no refresh request');
+  assert.equal(asked, 1);
+});
+
+test('a session cookie still refreshes, and a wrong code stops guest sign-in', async () => {
+  const f = setup(path => path === '/api/auth/refresh'
+    ? Response.json({ access_token: 'tok', token_type: 'Bearer', expires_in: 3600 })
+    : Response.json({ code: 'lobby_unavailable' }, { status: 404 }));
+  const auth = new AuthCoordinator({ ...f.env, hasSession: async () => true });
+  assert.equal(await auth.getToken(), 'tok');
+  const fresh = new AuthCoordinator(f.env);
+  await assert.rejects(fresh.guestSignIn('ZZZZZZ'), /No active session has that code/);
+  assert.deepEqual(f.paths, ['/api/auth/refresh', '/api/auth/guest?join_code=ZZZZZZ']);
+});

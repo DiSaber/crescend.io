@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import SignInGate from "../components/SignInGate";
 import { account, login, type Account } from "../lib/auth";
@@ -11,6 +11,8 @@ function CreateSession() {
   const router = useRouter();
   const [me, setMe] = useState<Account | null>();
   const [nickname, setNickname] = useState("");
+  // Prefill only an empty box nobody has typed in (no "CeeCee" from a late answer).
+  const touched = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -20,7 +22,8 @@ function CreateSession() {
       .then((value) => {
         if (!active) return;
         setMe(value ?? null);
-        if (value?.last_nickname) setNickname((current) => current || value.last_nickname!);
+        const last = value?.last_nickname;
+        if (last && !touched.current) setNickname((current) => current === "" ? last : current);
       })
       .catch(() => { if (active) setMe(null); });
     return () => { active = false; };
@@ -69,9 +72,9 @@ function CreateSession() {
             type="text"
             name="nickname"
             value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
+            onChange={(e) => { touched.current = true; setNickname(e.target.value); }}
             placeholder="What should everyone call you?"
-            maxLength={NICKNAME_MAX * 2}
+            maxLength={NICKNAME_MAX * 12}
             autoComplete="nickname"
             autoFocus
             className="w-full p-3 rounded-lg bg-zinc-800 border border-zinc-700 text-white text-lg placeholder-zinc-500 focus:outline-none focus:border-purple-500"
