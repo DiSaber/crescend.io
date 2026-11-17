@@ -32,8 +32,20 @@ pub struct CustomMode {
     pub rules: Rules,
 }
 
+/// One round's prompt. `text` rounds need text (1-200 characters); `image` rounds
+/// need an uploaded `image_id` and may add text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GamePrompt {
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub image_id: Option<String>,
+}
+
 /// Exactly one of `mode_id` and `custom`; `settings` overrides the mode's defaults
-/// and must satisfy its served schema.
+/// and must satisfy its served schema. `prompts` (up to 50) are used in order, one
+/// per round, and are required exactly when the mode's prompt rule is not `none`.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartGameRequest {
@@ -42,6 +54,35 @@ pub struct StartGameRequest {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub settings: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub prompts: Vec<GamePrompt>,
+}
+
+/// The current round's prompt. Fetch `image_id` from `.../game/images/{image_id}`
+/// with the bearer token; later prompts are never sent before their round.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PromptView {
+    /// 1-based position in the prompt list (equal to the round).
+    pub number: i64,
+    pub text: Option<String>,
+    pub image_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GameImage {
+    pub image_id: String,
+    /// `image/jpeg`, or `image/png` for images with transparency.
+    pub content_type: String,
+    pub width: i64,
+    pub height: i64,
+    pub bytes: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GameImagesResponse {
+    pub images: Vec<GameImage>,
+    /// Images the lobby may hold at once.
+    pub limit: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, ToSchema)]
@@ -234,6 +275,8 @@ pub struct GameView {
     pub phase_seq: i64,
     #[schema(value_type = Option<String>, format = DateTime)]
     pub phase_ends_at: Option<DateTime<Utc>>,
+    /// The current round's prompt in prompt modes while the game runs.
+    pub prompt: Option<PromptView>,
     /// The caller's own submissions for this round (Name That Tune: all their proposals).
     pub my_submissions: Vec<OwnSubmission>,
     /// How many songs this round has (Name That Tune: proposals), without identities.

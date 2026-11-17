@@ -69,7 +69,13 @@ this phase), `game_phase_changed` (stale `phase_seq`), `game_song_changed`
 (`play_seq` is not the playing song), `submission_limit_reached`,
 `vote_limit_reached`, `self_vote_forbidden`, `idempotency_conflict`, and for Name
 That Tune `song_already_proposed`, `own_song` (the proposer guessing their own song)
-and `guess_limit_reached`. The host guessing gets `403 host_cannot_guess`. Song links
+and `guess_limit_reached`. The host guessing gets `403 host_cannot_guess`.
+Prompts that do not fit the mode return `400 invalid_game_prompts`; an image that is
+not in the lobby, or not yet visible to the caller, `404 game_image_unavailable`.
+Uploads: `413 image_too_large` (over 5 MB), `415 unsupported_image_type` (not JPEG,
+PNG or WebP), `422 image_dimensions_exceeded` (over 4096 px), `422 invalid_image`
+(unreadable), `409 image_limit_reached` (30 per lobby) and, for deletion,
+`409 image_in_use`. Song links
 and metadata fail like the queue (`422 invalid_url`, `502 upstream_unavailable`,
 `502 metadata_unavailable`). Contention is `503 temporarily_unavailable`; unexpected
 storage failures are a sanitized `500 internal_error`. Failures change nothing.

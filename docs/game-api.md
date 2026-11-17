@@ -3,7 +3,8 @@
 Games run inside a lobby on one shared engine ([plan](game-modes.md)). All routes
 use the existing bearer auth; lobby game routes take the caller's membership
 generation like the queue. Responses, including errors, use `Cache-Control: no-store`.
-JSON bodies are limited to 4 KiB; unknown and duplicate fields are rejected.
+JSON bodies are limited to 4 KiB (32 KiB for starting a game); unknown and
+duplicate fields are rejected.
 Errors use the shared `{code,error}` envelope ([errors](api-errors.md#game-errors)).
 
 ## Modes
@@ -22,6 +23,7 @@ from this list and only send keys it contains.
 | `party` | `all` / `most_votes` / `votes_to_picker` | 5 rounds, 45 s collect, 30 s vote, full songs |
 | `speed_round` | same as Party | 8 rounds, 20 s collect, 15 s vote, 60 s clips |
 | `duel` | `pairs` / `pair_winners` / `winner_bonus` | 3 rounds, 60 s clips; no `votes_per_player` |
+| `picture_this` | Party's, with prompt `image` | one round per prompt, 60 s collect, 60 s clips |
 | `name_that_tune` | `none` / `none` / `guess_speed` (collect `propose`, challenge `guess_title`) | every proposal, 90 s to propose 2 songs, 30 s guesses from 0:30, 8 s reveal |
 
 Labels and limits depend on the rules: Name That Tune relabels `play_seconds` as
@@ -82,6 +84,8 @@ Any active member reads `GET .../game` (bodyless):
 the queue: every game commit increments it once. Count down to `phase_ends_at`
 using `server_time` as the reference, never the device clock; it is null in
 phases without a timer (`play`, `ended`). `total_rounds` is null for "until stopped".
+In prompt modes `prompt` is `{"number": 1, "text": "...", "image_id": "..."}` for the
+current round while the game runs, otherwise null.
 
 Visibility rules: `my_submissions` holds only the caller's own songs for the current
 round; others are counted in `submission_count` without identities. `ballot` exists
@@ -188,6 +192,47 @@ A stale `phase_seq` returns `409 game_phase_changed`; a `play_seq` that is not t
 playing song returns `409 game_song_changed`, so a delayed `ended` callback can never
 skip its successor. Both fields or neither is `400 invalid_request`. Ended or absent
 games return `409 game_not_running`.
+
+## Prompts and images
+
+Prompt modes (`prompt` rule `text` or `image`, such as Picture This) take a
+`prompts` list in the start request, used in order, one per round:
+
+```json
+{"mode_id": "picture_this", "prompts": [
+  {"image_id": "3f...", "text": "Which song is most Mr. Bean?"},
+  {"image_id": "9a..."}
+]}
+```
+
+`text` prompts need 1–200 characters of text and no image; `image` prompts need an
+`image_id` uploaded to this lobby and may add text. One to 50 prompts; modes with
+prompt `none` take none. Anything else is `400 invalid_game_prompts`; an image that
+is not in this lobby is `404 game_image_unavailable`. `rounds: 0` plays one round
+per prompt and a smaller `rounds` stops early. Only the current round's prompt is
+ever in a snapshot.
+
+Images are host-only. Upload with `POST .../game/images` as `multipart/form-data`
+with exactly one file field named `image` (other or repeated fields are
+`400 invalid_request`; a non-multipart body is `415 unsupported_media_type`).
+Accepted: JPEG, PNG or WebP (`415 unsupported_image_type` otherwise), at most 5 MB
+(`413 image_too_large`) and 4096 px on each side (`422 image_dimensions_exceeded`);
+unreadable files are `422 invalid_image`. The server applies the EXIF orientation
+and re-encodes from pixels, so metadata such as location never leaves the upload:
+images with transparency become PNG, the rest JPEG. The response is
+`{"image_id","content_type","width","height","bytes"}`. A lobby holds at most 30
+images (`409 image_limit_reached`).
+
+`GET .../game/images` (host) lists them with the `limit`. `GET .../game/images/{image_id}`
+returns the file with its `Content-Type` and `nosniff`. The host can fetch any lobby
+image (for the prompt editor preview); other members only images of prompts the game
+has reached, so later rounds stay secret (`404 game_image_unavailable`). The route
+needs the bearer token, so fetch it and display a blob URL rather than using the path
+as an `<img src>`. `DELETE .../game/images/{image_id}` (host, bodyless) returns 204,
+also for absent IDs; an image the running game still uses is `409 image_in_use`.
+
+Images live on the backend's data volume. Closing the lobby deletes them at once;
+expiry deletes them on the next cleanup pass (every minute).
 
 ## Sync and the jukebox
 

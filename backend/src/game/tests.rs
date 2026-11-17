@@ -17,6 +17,7 @@ mod g1_engine;
 mod g1_http;
 mod g2_modes;
 mod g3_tune;
+mod g4_prompts;
 
 const NOW: i64 = 1_800_000_000;
 
@@ -151,6 +152,7 @@ impl Fixture {
                 &lobby.host_membership,
                 &mode_id,
                 &definition,
+                &[],
                 || self.now(),
             )
             .await

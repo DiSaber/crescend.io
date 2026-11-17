@@ -21,6 +21,9 @@ use serde::de::DeserializeOwned;
 
 /// JSON bodies for game requests are small; start requests grow with prompts.
 const BODY_LIMIT: usize = 4096;
+const START_LIMIT: usize = 32 * 1024;
+/// Multipart framing allowance on top of the image itself.
+const UPLOAD_LIMIT: usize = crate::game::images::MAX_IMAGE_BYTES + 64 * 1024;
 
 pub fn lobby_router() -> Router<AppState> {
     Router::new()
@@ -35,6 +38,16 @@ pub fn lobby_router() -> Router<AppState> {
         )
         .route("/memberships/{membership_id}/game/votes", post(vote))
         .route("/memberships/{membership_id}/game/guesses", post(guess))
+        .route(
+            "/memberships/{membership_id}/game/images",
+            get(list_images)
+                .post(upload_image)
+                .layer(axum::extract::DefaultBodyLimit::max(UPLOAD_LIMIT)),
+        )
+        .route(
+            "/memberships/{membership_id}/game/images/{image_id}",
+            get(image).delete(delete_image),
+        )
 }
 
 pub fn modes_router() -> Router<AppState> {
@@ -106,11 +119,14 @@ pub(super) async fn start(
     request: Request,
 ) -> Result<Json<GameMutationResponse>, GameError> {
     let id = membership(path)?;
-    let payload: StartGameRequest = json(request, BODY_LIMIT).await?;
+    let payload: StartGameRequest = json(request, START_LIMIT).await?;
     let (mode_id, definition) = crate::game::resolve(&payload)?;
+    let prompts = crate::game::prompts(definition.rules.prompt, &payload.prompts)?;
     let game = app
         .database
-        .start_game(&user, &id, &mode_id, &definition, || (app.auth.clock)())
+        .start_game(&user, &id, &mode_id, &definition, &prompts, || {
+            (app.auth.clock)()
+        })
         .await?;
     publish(&app, true, &game);
     Ok(Json(GameMutationResponse {
@@ -232,6 +248,145 @@ pub(super) async fn guess(
     Ok(Json(response))
 }
 
+type ImagePath = Result<Path<(String, String)>, axum::extract::rejection::PathRejection>;
+
+fn image_path(path: ImagePath) -> Result<(String, String), GameError> {
+    let Path((membership, image)) = path.map_err(|_| GameError::InvalidRequest)?;
+    if !valid_id(&membership) || !valid_id(&image) {
+        return Err(GameError::InvalidRequest);
+    }
+    Ok((membership, image))
+}
+
+/// `multipart/form-data` with one file field named `image`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ImageUpload {
+    #[schema(value_type = String, format = Binary)]
+    image: Vec<u8>,
+}
+
+#[utoipa::path(post, path = "/api/lobbies/memberships/{membership_id}/game/images", tag = "Games",
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path)),
+    request_body(content = ImageUpload, content_type = "multipart/form-data"),
+    responses((status = 200, body = GameImage), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 413, body = ErrorResponse),
+        (status = 415, body = ErrorResponse), (status = 422, body = ErrorResponse), (status = 500, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)))]
+pub(super) async fn upload_image(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: MembershipPath,
+    multipart: Result<axum::extract::Multipart, axum::extract::multipart::MultipartRejection>,
+) -> Result<Json<GameImage>, GameError> {
+    use crate::game::images::{MAX_IMAGE_BYTES, process};
+    let id = membership(path)?;
+    // Authorize before reading or decoding anything.
+    app.database
+        .require_game_host(&user, &id, || (app.auth.clock)())
+        .await?;
+    let mut multipart = multipart.map_err(|_| GameError::MediaType)?;
+    let mut upload: Option<Vec<u8>> = None;
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
+        if field.name() != Some("image") || upload.is_some() {
+            return Err(GameError::InvalidRequest);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
+            if bytes.len() + chunk.len() > MAX_IMAGE_BYTES {
+                return Err(GameError::Image(crate::game::images::ImageError::TooLarge));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        upload = Some(bytes);
+    }
+    let bytes = upload.ok_or(GameError::InvalidRequest)?;
+    let processed = tokio::task::spawn_blocking(move || process(&bytes))
+        .await
+        .map_err(|_| GameError::Unavailable)?
+        .map_err(GameError::Image)?;
+    app.database
+        .store_game_image(&user, &id, &processed, || (app.auth.clock)())
+        .await
+        .map(Json)
+}
+
+fn multipart_error(error: axum::extract::multipart::MultipartError) -> GameError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        GameError::Image(crate::game::images::ImageError::TooLarge)
+    } else {
+        GameError::InvalidRequest
+    }
+}
+
+#[utoipa::path(get, path = "/api/lobbies/memberships/{membership_id}/game/images", tag = "Games",
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path)),
+    responses((status = 200, body = GameImagesResponse), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
+pub(super) async fn list_images(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: MembershipPath,
+    request: Request,
+) -> Result<Json<GameImagesResponse>, GameError> {
+    let id = membership(path)?;
+    bodyless(request).await?;
+    app.database
+        .list_game_images(&user, &id, || (app.auth.clock)())
+        .await
+        .map(Json)
+}
+
+#[utoipa::path(get, path = "/api/lobbies/memberships/{membership_id}/game/images/{image_id}", tag = "Games",
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path), ("image_id" = String, Path)),
+    responses((status = 200, description = "The re-encoded image (image/jpeg or image/png)", content_type = "image/*", body = Vec<u8>),
+        (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse), (status = 403, body = ErrorResponse),
+        (status = 404, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
+pub(super) async fn image(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: ImagePath,
+    request: Request,
+) -> Result<Response, GameError> {
+    let (membership, image) = image_path(path)?;
+    bodyless(request).await?;
+    let (content_type, file) = app
+        .database
+        .game_image(&user, &membership, &image, || (app.auth.clock)())
+        .await?;
+    let bytes = tokio::fs::read(&file).await.map_err(|error| {
+        eprintln!("game image missing from storage: {error}");
+        GameError::ImageUnavailable
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+#[utoipa::path(delete, path = "/api/lobbies/memberships/{membership_id}/game/images/{image_id}", tag = "Games",
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path), ("image_id" = String, Path)),
+    responses((status = 204, description = "Deleted or already absent"), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 500, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)))]
+pub(super) async fn delete_image(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: ImagePath,
+    request: Request,
+) -> Result<StatusCode, GameError> {
+    let (membership, image) = image_path(path)?;
+    bodyless(request).await?;
+    app.database
+        .delete_game_image(&user, &membership, &image, || (app.auth.clock)())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Publishes on the membership event stream exactly like queue commits.
 fn publish(app: &AppState, changed: bool, view: &GameSnapshot) {
     if changed {
@@ -335,6 +490,38 @@ impl GameError {
                 "This is your song; you score when others guess it.",
             ),
             Self::GuessLimit => (409, "guess_limit_reached", "No guesses left this round."),
+            Self::InvalidPrompts => (
+                400,
+                "invalid_game_prompts",
+                "Prompts do not fit this mode: check the count, text and images.",
+            ),
+            Self::ImageUnavailable => (404, "game_image_unavailable", "Image unavailable."),
+            Self::ImageInUse => (
+                409,
+                "image_in_use",
+                "The running game still uses this image.",
+            ),
+            Self::ImageLimit => (
+                409,
+                "image_limit_reached",
+                "This lobby already holds the most images allowed.",
+            ),
+            Self::Image(crate::game::images::ImageError::TooLarge) => {
+                (413, "image_too_large", "Images must be 5 MB or smaller.")
+            }
+            Self::Image(crate::game::images::ImageError::Type) => (
+                415,
+                "unsupported_image_type",
+                "Upload a JPEG, PNG or WebP image.",
+            ),
+            Self::Image(crate::game::images::ImageError::Dimensions) => (
+                422,
+                "image_dimensions_exceeded",
+                "Images must be at most 4096 pixels on each side.",
+            ),
+            Self::Image(crate::game::images::ImageError::Invalid) => {
+                (422, "invalid_image", "The image could not be read.")
+            }
             Self::SubmissionUnavailable => (
                 404,
                 "game_submission_unavailable",

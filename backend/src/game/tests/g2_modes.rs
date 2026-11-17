@@ -229,6 +229,7 @@ async fn custom_rules_run_when_valid_and_are_rejected_when_they_conflict() {
             &lobby.host_membership,
             &mode_id,
             &definition,
+            &[],
             || f.now(),
         )
         .await

@@ -10,6 +10,7 @@ use crate::{
     game::{
         GameError,
         answer::{MAX_WRONG_GUESSES, clean_title, matches},
+        images::{self, Processed},
         modes::Definition,
         random_id,
         rules::{ChallengeRule, CollectRule, Entry},
@@ -44,6 +45,7 @@ pub(crate) struct Game {
     pub last_result: Option<RoundResult>,
     /// The lobby host: their player shows the video, so they never guess.
     pub owner: i64,
+    pub prompts: Vec<GamePrompt>,
 }
 
 fn corrupt(what: &str) -> sqlx::Error {
@@ -80,6 +82,8 @@ async fn load(tx: &mut Tx<'_>, lobby: &str) -> Result<Option<Game>, GameError> {
             .map(|value| serde_json::from_str(&value).map_err(|_| corrupt("result")))
             .transpose()?,
         owner: row.try_get("owner_user_id")?,
+        prompts: serde_json::from_str(&row.try_get::<String, _>("prompts")?)
+            .map_err(|_| corrupt("prompts"))?,
     }))
 }
 
@@ -784,6 +788,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
         phase: game.phase,
         phase_seq: game.phase_seq,
         phase_ends_at: game.phase_ends_at.map(utc).transpose()?,
+        prompt: current_prompt(game),
         my_submissions,
         submission_count,
         ballot,
@@ -800,6 +805,28 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
             })
             .collect(),
     })
+}
+
+/// Only the round's own prompt is ever sent; later prompts stay with the host.
+fn current_prompt(game: &Game) -> Option<PromptView> {
+    if game.status != GameStatus::Running {
+        return None;
+    }
+    let index = usize::try_from(game.round - 1).ok()?;
+    game.prompts.get(index).map(|prompt| PromptView {
+        number: game.round,
+        text: prompt.text.clone(),
+        image_id: prompt.image_id.clone(),
+    })
+}
+
+/// Images players may already see: those of prompts up to the current round.
+fn revealed_images(game: &Game) -> impl Iterator<Item = &str> {
+    let shown = usize::try_from(game.round).unwrap_or(0);
+    game.prompts
+        .iter()
+        .take(shown)
+        .filter_map(|p| p.image_id.as_deref())
 }
 
 async fn snapshot(
@@ -883,6 +910,7 @@ impl Database {
         membership: &str,
         mode_id: &str,
         definition: &Definition,
+        prompts: &[GamePrompt],
         clock: impl Fn() -> i64,
     ) -> Result<GameSnapshot, GameError> {
         let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -891,15 +919,33 @@ impl Database {
         if existing.is_some_and(|g| g.status == GameStatus::Running) {
             return Err(GameError::GameRunning);
         }
+        for image in prompts.iter().filter_map(|p| p.image_id.as_deref()) {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM game_images WHERE id = ? AND lobby_id = ?)",
+            )
+            .bind(image)
+            .bind(&bound.lobby_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !exists {
+                return Err(GameError::ImageUnavailable);
+            }
+        }
         sqlx::query("DELETE FROM games WHERE lobby_id = ?")
             .bind(&bound.lobby_id)
             .execute(&mut *tx)
             .await?;
         let now = clock();
         let settings = &definition.settings;
-        let total = (settings.rounds > 0).then_some(settings.rounds);
-        sqlx::query("INSERT INTO games(lobby_id, id, mode_id, definition, status, round, total_rounds, phase, phase_seq, phase_ends_at, started_by_user_id, started_at)
-            VALUES (?, ?, ?, ?, 'running', 1, ?, 'collect', 1, ?, ?, ?)")
+        // Prompt modes play one round per prompt, capped by `rounds` when it is set.
+        let total = match (prompts.len() as i64, settings.rounds) {
+            (0, 0) => None,
+            (0, rounds) => Some(rounds),
+            (available, 0) => Some(available),
+            (available, rounds) => Some(rounds.min(available)),
+        };
+        sqlx::query("INSERT INTO games(lobby_id, id, mode_id, definition, status, round, total_rounds, phase, phase_seq, phase_ends_at, started_by_user_id, started_at, prompts)
+            VALUES (?, ?, ?, ?, 'running', 1, ?, 'collect', 1, ?, ?, ?, ?)")
             .bind(&bound.lobby_id)
             .bind(random_id()?)
             .bind(mode_id)
@@ -908,6 +954,7 @@ impl Database {
             .bind(later(now, settings.collect_seconds)?)
             .bind(user.id)
             .bind(now)
+            .bind(serde_json::to_string(prompts).expect("prompts JSON"))
             .execute(&mut *tx)
             .await?;
         finish(tx, bound, user, membership, true, clock).await
@@ -1278,6 +1325,7 @@ impl Database {
                 started_at INTEGER NOT NULL,
                 ended_at INTEGER,
                 last_result TEXT CHECK(last_result IS NULL OR json_valid(last_result)),
+                prompts TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(prompts)),
                 CHECK((status = 'ended') = (phase = 'ended')),
                 CHECK((status = 'ended') = (ended_at IS NOT NULL))
             ) STRICT",
@@ -1335,34 +1383,239 @@ impl Database {
                 CHECK((rank IS NULL) = (correct_at IS NULL)),
                 PRIMARY KEY(game_id, round, user_id)
             ) STRICT",
+            "CREATE TABLE IF NOT EXISTS game_images (
+                id TEXT PRIMARY KEY NOT NULL CHECK(length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*'),
+                lobby_id TEXT NOT NULL REFERENCES lobbies(id) ON DELETE CASCADE,
+                content_type TEXT NOT NULL CHECK(content_type IN ('image/jpeg', 'image/png')),
+                width INTEGER NOT NULL CHECK(width BETWEEN 1 AND 4096),
+                height INTEGER NOT NULL CHECK(height BETWEEN 1 AND 4096),
+                bytes INTEGER NOT NULL CHECK(bytes >= 1),
+                created_at INTEGER NOT NULL
+            ) STRICT",
+            "CREATE INDEX IF NOT EXISTS game_images_lobby ON game_images(lobby_id)",
             "CREATE INDEX IF NOT EXISTS game_submissions_round ON game_submissions(game_id, round)",
             "CREATE INDEX IF NOT EXISTS game_votes_round ON game_votes(game_id, round)",
         ] {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
-        // Databases created before Name That Tune lack these columns.
-        for (column, definition) in [
-            ("answer", "answer TEXT"),
+        // Databases created by earlier milestones lack these columns.
+        for (table, column, definition) in [
+            ("game_submissions", "answer", "answer TEXT"),
             (
+                "game_submissions",
                 "play_round",
                 "play_round INTEGER CHECK(play_round IS NULL OR play_round >= 1)",
             ),
+            ("games", "prompts", "prompts TEXT NOT NULL DEFAULT '[]'"),
         ] {
             let present: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('game_submissions') WHERE name = ?)",
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)",
             )
+            .bind(table)
             .bind(column)
             .fetch_one(&mut *tx)
             .await?;
             if !present {
                 sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "ALTER TABLE game_submissions ADD COLUMN {definition}"
+                    "ALTER TABLE {table} ADD COLUMN {definition}"
                 )))
                 .execute(&mut *tx)
                 .await?;
             }
         }
         tx.commit().await
+    }
+}
+
+impl Database {
+    /// Host check before an upload body is read or decoded.
+    pub(crate) async fn require_game_host(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<(), GameError> {
+        let mut tx = self.db_pool.begin().await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Host, &clock).await?;
+        check_deadlines(&bound, user, clock())?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Stores a processed upload: the file is written inside the transaction and
+    /// removed again if the row does not commit.
+    pub(crate) async fn store_game_image(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        image: &Processed,
+        clock: impl Fn() -> i64,
+    ) -> Result<GameImage, GameError> {
+        let root = images::root(self).await?;
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Host, &clock).await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM game_images WHERE lobby_id = ?")
+            .bind(&bound.lobby_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if count >= images::MAX_IMAGES_PER_LOBBY {
+            return Err(GameError::ImageLimit);
+        }
+        let id = random_id()?;
+        sqlx::query("INSERT INTO game_images(id, lobby_id, content_type, width, height, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(&id).bind(&bound.lobby_id).bind(image.content_type)
+            .bind(i64::from(image.width)).bind(i64::from(image.height)).bind(image.bytes.len() as i64).bind(clock())
+            .execute(&mut *tx).await?;
+        check_deadlines(&bound, user, clock())?;
+        let file = images::path(&root, &bound.lobby_id, &id, image.content_type);
+        let written = async {
+            tokio::fs::create_dir_all(images::lobby_dir(&root, &bound.lobby_id)).await?;
+            tokio::fs::write(&file, &image.bytes).await
+        }
+        .await;
+        if let Err(error) = written {
+            eprintln!("game image could not be written: {error}");
+            let _ = tokio::fs::remove_file(&file).await;
+            return Err(GameError::Unavailable);
+        }
+        if let Err(error) = tx.commit().await {
+            let _ = tokio::fs::remove_file(&file).await;
+            return Err(error.into());
+        }
+        Ok(GameImage {
+            image_id: id,
+            content_type: image.content_type.into(),
+            width: image.width.into(),
+            height: image.height.into(),
+            bytes: image.bytes.len() as i64,
+        })
+    }
+
+    pub(crate) async fn list_game_images(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<GameImagesResponse, GameError> {
+        let mut tx = self.db_pool.begin().await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Host, &clock).await?;
+        let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, content_type, width, height, bytes FROM game_images WHERE lobby_id = ? ORDER BY created_at, id",
+        )
+        .bind(&bound.lobby_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        check_deadlines(&bound, user, clock())?;
+        tx.commit().await?;
+        Ok(GameImagesResponse {
+            images: rows
+                .into_iter()
+                .map(|(image_id, content_type, width, height, bytes)| GameImage {
+                    image_id,
+                    content_type,
+                    width,
+                    height,
+                    bytes,
+                })
+                .collect(),
+            limit: images::MAX_IMAGES_PER_LOBBY,
+        })
+    }
+
+    /// The file for an image the caller may see: any lobby image for the host,
+    /// otherwise only images of prompts the game has reached.
+    pub(crate) async fn game_image(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        image: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<(String, std::path::PathBuf), GameError> {
+        let root = images::root(self).await?;
+        let mut tx = self.db_pool.begin().await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Member, &clock).await?;
+        let content_type: Option<String> = sqlx::query_scalar(
+            "SELECT content_type FROM game_images WHERE id = ? AND lobby_id = ?",
+        )
+        .bind(image)
+        .bind(&bound.lobby_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let content_type = content_type.ok_or(GameError::ImageUnavailable)?;
+        if user.id != bound.owner {
+            let game = load(&mut tx, &bound.lobby_id).await?;
+            if !game.is_some_and(|g| revealed_images(&g).any(|id| id == image)) {
+                return Err(GameError::ImageUnavailable);
+            }
+        }
+        check_deadlines(&bound, user, clock())?;
+        tx.commit().await?;
+        let file = images::path(&root, &bound.lobby_id, image, &content_type);
+        Ok((content_type, file))
+    }
+
+    /// Deletes an image unless a running game still needs it. Absent IDs are no-ops.
+    pub(crate) async fn delete_game_image(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        image: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<(), GameError> {
+        let root = images::root(self).await?;
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Host, &clock).await?;
+        if let Some(game) = load(&mut tx, &bound.lobby_id).await? {
+            if game.status == GameStatus::Running
+                && game
+                    .prompts
+                    .iter()
+                    .any(|p| p.image_id.as_deref() == Some(image))
+            {
+                return Err(GameError::ImageInUse);
+            }
+        }
+        let content_type: Option<String> = sqlx::query_scalar(
+            "DELETE FROM game_images WHERE id = ? AND lobby_id = ? RETURNING content_type",
+        )
+        .bind(image)
+        .bind(&bound.lobby_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        check_deadlines(&bound, user, clock())?;
+        tx.commit().await?;
+        if let Some(content_type) = content_type {
+            let _ =
+                tokio::fs::remove_file(images::path(&root, &bound.lobby_id, image, &content_type))
+                    .await;
+        }
+        Ok(())
+    }
+
+    /// Removes image folders of lobbies that are closed or gone. Runs after a host
+    /// closes a lobby and on the cleanup interval (which deletes expired lobbies).
+    pub(crate) async fn sweep_game_images(&self) -> Result<usize, sqlx::Error> {
+        let root = images::root(self).await?;
+        let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
+            return Ok(0);
+        };
+        let mut removed = 0;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !crate::models::queue::valid_id(&name) {
+                continue;
+            }
+            let open: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM lobbies WHERE id = ? AND closed_at IS NULL)",
+            )
+            .bind(&name)
+            .fetch_one(&self.db_pool)
+            .await?;
+            if !open && tokio::fs::remove_dir_all(entry.path()).await.is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 }
 

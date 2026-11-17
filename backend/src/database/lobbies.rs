@@ -93,6 +93,11 @@ impl Database {
                 .bind(lobby_id.as_str())
                 .execute(&mut *tx)
                 .await?;
+            // Files go with the rows: the route sweeps this lobby's folder after commit.
+            sqlx::query("DELETE FROM game_images WHERE lobby_id = ?")
+                .bind(lobby_id.as_str())
+                .execute(&mut *tx)
+                .await?;
             sqlx::query("DELETE FROM lobby_queue_policies WHERE lobby_id = ?")
                 .bind(lobby_id.as_str())
                 .execute(&mut *tx)
