@@ -18,6 +18,7 @@ mod g1_http;
 mod g2_modes;
 mod g3_tune;
 mod g4_prompts;
+mod g5_saved;
 
 const NOW: i64 = 1_800_000_000;
 
@@ -145,7 +146,7 @@ impl Fixture {
         let request: StartGameRequest =
             serde_json::from_value(serde_json::json!({"mode_id": mode, "settings": settings}))
                 .unwrap();
-        let (mode_id, definition) = crate::game::resolve(&request)?;
+        let (mode_id, definition) = crate::game::resolve(&request, None)?;
         self.database
             .start_game(
                 &lobby.host,

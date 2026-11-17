@@ -51,7 +51,79 @@ pub fn lobby_router() -> Router<AppState> {
 }
 
 pub fn modes_router() -> Router<AppState> {
-    Router::new().route("/", get(list_modes))
+    Router::new()
+        .route("/", get(list_modes).post(save_mode))
+        .route("/{mode_id}", axum::routing::delete(delete_mode))
+}
+
+fn mode_view(
+    id: String,
+    description: &str,
+    preset: bool,
+    definition: modes::Definition,
+    default_prompts: Vec<GamePrompt>,
+) -> GameModeView {
+    GameModeView {
+        id,
+        settings: modes::schema(&definition),
+        name: definition.name,
+        description: description.into(),
+        preset,
+        rules: definition.rules,
+        default_prompts,
+    }
+}
+
+#[utoipa::path(post, path = "/api/game-modes", tag = "Games",
+    security(("bearer_auth" = [])), request_body = SaveModeRequest,
+    responses((status = 201, body = GameModeView), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
+        (status = 409, body = ErrorResponse), (status = 413, body = ErrorResponse), (status = 415, body = ErrorResponse),
+        (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
+pub(super) async fn save_mode(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    request: Request,
+) -> Result<(StatusCode, Json<GameModeView>), GameError> {
+    let payload: SaveModeRequest = json(request, START_LIMIT).await?;
+    let definition = crate::game::customize(
+        crate::game::custom_definition(&payload.name, payload.rules)?,
+        &payload.settings,
+    )?;
+    let prompts = crate::game::saved_prompts(definition.rules.prompt, &payload.prompts)?;
+    let saved = app
+        .database
+        .save_game_mode(&user, &definition, &prompts, || (app.auth.clock)())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(mode_view(
+            saved.id,
+            SAVED,
+            false,
+            saved.definition,
+            saved.prompts,
+        )),
+    ))
+}
+
+const SAVED: &str = "Your saved mode.";
+
+#[utoipa::path(delete, path = "/api/game-modes/{mode_id}", tag = "Games",
+    security(("bearer_auth" = [])), params(("mode_id" = String, Path, description = "A saved mode's 32-hex ID")),
+    responses((status = 204, description = "Deleted, or not one of the caller's saved modes"), (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
+pub(super) async fn delete_mode(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: MembershipPath,
+    request: Request,
+) -> Result<StatusCode, GameError> {
+    let id = membership(path)?;
+    bodyless(request).await?;
+    app.database
+        .delete_game_mode(&user, &id, || (app.auth.clock)())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 type MembershipPath = Result<Path<String>, axum::extract::rejection::PathRejection>;
@@ -66,25 +138,29 @@ fn membership(path: MembershipPath) -> Result<String, GameError> {
     responses((status = 200, body = GameModesResponse), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
 pub(super) async fn list_modes(
-    Extension(_user): Extension<AuthenticatedUser>,
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
     request: Request,
 ) -> Result<Json<GameModesResponse>, GameError> {
     bodyless(request).await?;
+    let saved = app
+        .database
+        .saved_game_modes(&user, || (app.auth.clock)())
+        .await?;
+    let presets = modes::PRESETS.iter().map(|preset| {
+        mode_view(
+            preset.id.into(),
+            preset.description,
+            true,
+            (preset.definition)(),
+            Vec::new(),
+        )
+    });
+    let saved = saved
+        .into_iter()
+        .map(|mode| mode_view(mode.id, SAVED, false, mode.definition, mode.prompts));
     Ok(Json(GameModesResponse {
-        modes: modes::PRESETS
-            .iter()
-            .map(|preset| {
-                let definition = (preset.definition)();
-                GameModeView {
-                    id: preset.id.into(),
-                    settings: modes::schema(&definition),
-                    name: definition.name,
-                    description: preset.description.into(),
-                    preset: true,
-                    rules: definition.rules,
-                }
-            })
-            .collect(),
+        modes: presets.chain(saved).collect(),
     }))
 }
 
@@ -120,8 +196,22 @@ pub(super) async fn start(
 ) -> Result<Json<GameMutationResponse>, GameError> {
     let id = membership(path)?;
     let payload: StartGameRequest = json(request, START_LIMIT).await?;
-    let (mode_id, definition) = crate::game::resolve(&payload)?;
-    let prompts = crate::game::prompts(definition.rules.prompt, &payload.prompts)?;
+    // A 32-hex mode ID names one of the host's saved modes; anything else a preset.
+    let saved = match payload.mode_id.as_deref().filter(|id| valid_id(id)) {
+        Some(mode) => Some(app.database.saved_game_mode(&user, mode).await?),
+        None => None,
+    };
+    let (defaults, base) = match saved {
+        Some(mode) => (mode.prompts, Some(mode.definition)),
+        None => (Vec::new(), None),
+    };
+    let (mode_id, definition) = crate::game::resolve(&payload, base)?;
+    let requested = if payload.prompts.is_empty() {
+        &defaults
+    } else {
+        &payload.prompts
+    };
+    let prompts = crate::game::prompts(definition.rules.prompt, requested)?;
     let game = app
         .database
         .start_game(&user, &id, &mode_id, &definition, &prompts, || {
@@ -494,6 +584,11 @@ impl GameError {
                 400,
                 "invalid_game_prompts",
                 "Prompts do not fit this mode: check the count, text and images.",
+            ),
+            Self::ModeLimit => (
+                409,
+                "mode_limit_reached",
+                "You have saved the most modes allowed; delete one first.",
             ),
             Self::ImageUnavailable => (404, "game_image_unavailable", "Image unavailable."),
             Self::ImageInUse => (

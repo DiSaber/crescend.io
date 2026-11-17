@@ -56,7 +56,7 @@ async fn start_prompts(
     request: Value,
 ) -> Result<GameSnapshot, GameError> {
     let request: StartGameRequest = serde_json::from_value(request).unwrap();
-    let (mode_id, definition) = crate::game::resolve(&request)?;
+    let (mode_id, definition) = crate::game::resolve(&request, None)?;
     let prompts = crate::game::prompts(definition.rules.prompt, &request.prompts)?;
     f.database
         .start_game(

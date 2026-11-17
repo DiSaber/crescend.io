@@ -2,6 +2,7 @@ use std::{str::FromStr, time::Duration};
 
 pub mod catalog;
 pub mod game;
+pub mod game_modes;
 pub mod lobbies;
 pub mod queue;
 
@@ -86,6 +87,7 @@ impl Database {
         self.create_queue_tables().await?;
         self.create_catalog_tables().await?;
         self.create_game_tables().await?;
+        self.create_game_mode_tables().await?;
         Ok(())
     }
 

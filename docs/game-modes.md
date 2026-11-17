@@ -1,6 +1,6 @@
 # Game modes: plan and contract
 
-Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30.
+Status: working plan on `to-pimp-a-branch`. Tracks #43; uses the TV/phone split from #48 where it exists. Final deliverable is due 2026-11-30. Backend G1–G5 built on 2026-11-05 (endpoint reference: [game-api.md](game-api.md)); frontend and G6 not started.
 
 ## Goal
 
@@ -204,14 +204,34 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   transaction and the folder right after; the minute cleanup loop removes folders of
   closed or expired lobbies, which also covers a crash between the two.
 
+- **Saved modes (G5).** `game_modes` rows hold the owner, the resolved definition
+  (name, rules, concrete settings) and default prompts. Only `text` modes keep
+  default prompts, because uploaded images are deleted with their lobby. 50 per
+  account. Starting one applies the start request's overrides on top. Deleting a
+  foreign or absent ID is a silent no-op so IDs cannot be probed.
+- **Creation log (G5).** `game_mode_log` is append-only and internal (no route reads
+  it). One row per mode saved (`created`) and per game started (`started`, for
+  presets, custom and saved modes alike): account, time, mode key (preset key,
+  `custom` or saved ID), the full definition and `definition_hash`, a SHA-256 of
+  the rules and settings without the name, so renamed copies count together. Rows
+  survive mode deletion. Popular creations to consider as presets:
+
+  ```sql
+  SELECT definition_hash, count(*) AS starts, count(DISTINCT account_id) AS hosts,
+         max(definition) AS example
+  FROM game_mode_log WHERE event = 'started' AND mode_key NOT IN
+    ('party', 'speed_round', 'duel', 'picture_this', 'name_that_tune')
+  GROUP BY definition_hash ORDER BY hosts DESC, starts DESC LIMIT 20;
+  ```
+
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 
 All under the existing bearer auth; game routes require an active membership of the lobby; host-only routes return `403 host_required`.
 
 | Method and path | Who | Purpose |
 | --- | --- | --- |
-| `GET /api/game-modes` | any | Presets and the caller's saved modes, each with its settings schema |
-| `POST /api/game-modes` | any | Save a custom mode; validates rules and settings |
+| `GET /api/game-modes` | any | Presets and the caller's saved modes, each with its settings schema and default prompts |
+| `POST /api/game-modes` | any | Save a custom mode `{name, rules, settings, prompts}`; validates rules, settings and prompts |
 | `DELETE /api/game-modes/{id}` | owner | Delete a saved mode |
 | `POST /api/lobbies/memberships/{m}/game` | host | Start a game: `{mode_id or custom: {name, rules}, settings, prompts}` |
 | `GET /api/lobbies/memberships/{m}/game` | member | Game snapshot: mode, round, phase, `phase_ends_at`, prompt, the caller's own submission, the ballot (only during vote), results, scoreboard, revision |
