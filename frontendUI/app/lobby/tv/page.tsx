@@ -62,10 +62,10 @@ function Board() {
             </div>
             {game.prompt && (
               <div className="flex flex-col gap-4">
-                {game.prompt.image_id && (
-                  <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="w-full max-h-[60vh] min-h-60 rounded-xl object-contain bg-black" />
-                )}
                 {game.prompt.text && <p className="text-4xl sm:text-5xl font-bold">{game.prompt.text}</p>}
+                {game.prompt.image_id && (
+                  <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="w-full max-h-[40vh] min-h-48 rounded-xl object-contain bg-black" />
+                )}
               </div>
             )}
             <PhaseBoard game={game} name={name} />
