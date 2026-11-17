@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchImage, joinNames, leaders, pairSummary, resultGroups, type GameView, type Phase } from "../../lib/game";
+import { emptyRound, emptyRoundLine, fetchImage, joinNames, leaders, pairSummary, resultGroups, type GameView, type Phase } from "../../lib/game";
 
 /** Milliseconds until `iso` on the server's clock (`offset` = server minus device). */
 export function remainingMs(iso: string | null, offset: number) {
@@ -63,6 +63,8 @@ export function GameAnnouncer({ game, name }: { game: GameView; name: NameFn }) 
     if (result.note === "nobody_to_guess") text += " Skipped: nobody left to guess.";
     text += ` It was ${result.answer ?? result.entries[0]?.song.title ?? "a mystery"}.`;
     if (result.note !== "nobody_to_guess") text += result.guesses.length ? ` ${result.guesses.length} named it; first was ${name(result.guesses[0].user_id, result.guesses[0].nickname)}.` : " Nobody named it.";
+  } else if (result && emptyRound(game, result) && game.phase !== "ended") {
+    text += ` ${emptyRoundLine(result)}`;
   } else if (result && game.mode.rules.ballot === "pairs" && game.phase !== "ended") {
     text += ` Round ${result.round}: ${resultGroups(result).map(pairSummary).join("; ")}.`;
   } else if (result && game.mode.rules.collect === "pick" && game.phase !== "ended") {

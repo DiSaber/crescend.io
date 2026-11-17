@@ -7,7 +7,7 @@ import { QRCodeSVG } from "qrcode.react";
 import SignInGate from "../../components/SignInGate";
 import { Countdown, GameAnnouncer, GameImage, Scoreboard, phaseName, playerName, roundLabel, type NameFn } from "../../components/game/bits";
 import { QueueSession, defaults } from "../../lib/queue-state";
-import { getBoardGame, pairSummary, resultGroups, winnerLine, type GameView } from "../../lib/game";
+import { duelShortNotice, emptyRound, emptyRoundLine, getBoardGame, pairSummary, resultGroups, shownPrompt, winnerLine, type GameView } from "../../lib/game";
 
 /**
  * The shared board for a TV or projector (#48): prompt, timer, progress and
@@ -34,6 +34,7 @@ function Board() {
   const ownerId = lobby.owner_user_id;
   const name = (id: string | null | undefined, nickname: string | null | undefined) => playerName(id, nickname, undefined);
   const current = state.queue?.current;
+  const prompt = game ? shownPrompt(game) : null;
 
   return (
     <div className="w-full max-w-[120rem] flex flex-col gap-6 py-6 lg:h-full lg:min-h-0">
@@ -64,20 +65,21 @@ function Board() {
               </div>
               <Countdown size="xl" endsAt={game.phase_ends_at ?? (game.phase === "play" ? game.now_playing?.ends_at ?? null : null)} offset={state.clockOffset} />
             </div>
-            {game.prompt && (
+            {prompt && (
               // While voting the ballot needs the room: the image sits beside the prompt
               // text instead of under it. Otherwise it takes the height left over.
               <div className={game.phase === "vote"
                 ? "flex flex-row items-stretch gap-4 shrink-0"
-                : `flex flex-col gap-4 min-h-0 lg:overflow-hidden ${game.prompt.image_id ? "lg:flex-1" : "shrink-0"}`}>
-                {game.prompt.text && <p className={`font-bold line-clamp-3 shrink-0 ${game.phase === "vote" ? "flex-1 min-w-0 text-3xl xl:text-4xl" : "text-4xl xl:text-5xl"}`}>{game.prompt.text}</p>}
-                {game.prompt.image_id && (
+                : `flex flex-col gap-4 min-h-0 lg:overflow-hidden ${prompt.image_id ? "lg:flex-1" : "shrink-0"}`}>
+                {prompt.text && <p className={`font-bold line-clamp-3 shrink-0 ${game.phase === "vote" ? "flex-1 min-w-0 text-3xl xl:text-4xl" : "text-4xl xl:text-5xl"}`}>{prompt.text}</p>}
+                {prompt.image_id && (
                   <div className={`relative rounded-xl bg-black overflow-hidden ${game.phase === "vote" ? "w-1/3 min-h-28 shrink-0" : "min-h-48 h-[50vh] lg:min-h-24 lg:h-auto lg:flex-1"}`}>
-                    <GameImage membershipId={membershipId} imageId={game.prompt.image_id} alt={game.prompt.text ?? "Round image"} className="absolute inset-0 h-full w-full object-contain" />
+                    <GameImage membershipId={membershipId} imageId={prompt.image_id} alt={prompt.text ?? "Round image"} className="absolute inset-0 h-full w-full object-contain" />
                   </div>
                 )}
               </div>
             )}
+            {duelShortNotice(game, lobby.members.length) && <p role="status" className="shrink-0 rounded-lg bg-amber-950/60 border border-amber-800 p-3 text-2xl text-amber-200">{duelShortNotice(game, lobby.members.length)}</p>}
             <PhaseBoard game={game} name={name} />
           </section>
           <Scoreboard game={game} ownerId={ownerId} me={undefined} large />
@@ -176,7 +178,10 @@ function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
           </div>
         </div>
       )}
-      {game.phase !== "reveal" && game.phase !== "guess" && pairs && game.last_result && game.phase !== "vote" && (
+      {game.phase !== "reveal" && game.phase !== "guess" && game.phase !== "ended" && game.phase !== "vote" && emptyRound(game, game.last_result) && (
+        <p className="text-2xl text-zinc-300">{emptyRoundLine(game.last_result!)}</p>
+      )}
+      {game.phase !== "reveal" && game.phase !== "guess" && pairs && game.last_result && game.phase !== "vote" && !emptyRound(game, game.last_result) && (
         <div className="flex flex-col gap-1">
           <p className="text-2xl text-zinc-300">Round {game.last_result.round}{upNext ? " · up next" : ""}</p>
           <ol className="flex flex-col gap-1">

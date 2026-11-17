@@ -227,6 +227,7 @@ pub fn accepts(guess: &str, answer: &str) -> bool {
 /// A guess matches when, after normalization, it is within a small edit distance of
 /// the answer (relative to its length), or it contains every significant answer word
 /// (words of five or more letters may have one typo) with at most three extra words.
+/// Each guess word counts for one answer word, so "Waka" does not name "Waka Waka".
 pub fn matches(guess: &str, answer: &str) -> bool {
     let (guess, answer) = (normalize(guess), normalize(answer));
     if guess.is_empty() || answer.is_empty() {
@@ -247,12 +248,34 @@ pub fn matches(guess: &str, answer: &str) -> bool {
     if significant.is_empty() {
         significant = answer_words.clone();
     }
-    guess_words.len() <= answer_words.len() + 3
-        && significant.iter().all(|word| {
-            guess_words
-                .iter()
-                .any(|g| g == word || (word.chars().count() >= 5 && distance(g, word) <= 1))
-        })
+    guess_words.len() <= answer_words.len() + 3 && covers(&guess_words, &significant)
+}
+
+/// Whether every required word is matched by its own guess word, so a repeated title
+/// word ("Waka Waka") needs to be typed as often as it appears. Exact matches are
+/// assigned first, then the remaining words of five or more letters may take a guess
+/// word one typo away.
+fn covers(guess_words: &[&str], required: &[&str]) -> bool {
+    let mut used = vec![false; guess_words.len()];
+    let mut missing = Vec::new();
+    for word in required {
+        match (0..guess_words.len()).find(|&i| !used[i] && guess_words[i] == *word) {
+            Some(i) => used[i] = true,
+            None => missing.push(*word),
+        }
+    }
+    missing.into_iter().all(|word| {
+        word.chars().count() >= 5
+            && match (0..guess_words.len())
+                .find(|&i| !used[i] && distance(guess_words[i], word) <= 1)
+            {
+                Some(i) => {
+                    used[i] = true;
+                    true
+                }
+                None => false,
+            }
+    })
 }
 
 #[cfg(test)]
@@ -417,6 +440,72 @@ mod tests {
             "nothing left: the full key is the only answer"
         );
         assert_eq!(core_title("Bohemian Rhapsody"), "Bohemian Rhapsody");
+    }
+
+    #[test]
+    fn repeated_title_words_must_be_typed_as_often_as_they_appear() {
+        for (guess, answer) in [
+            ("Waka Waka", "Waka Waka (This Time for Africa)"),
+            ("Shakira Waka Waka", "Waka Waka (This Time for Africa)"),
+            ("wakka waka", "Waka Waka (This Time for Africa)"),
+            ("Please Please Please", "Please Please Please"),
+            ("please please pleese", "Please Please Please"),
+            ("Dai Dai", "Dai Dai"),
+            ("Cha-Cha Slide", "Cha-Cha Slide"),
+            ("cha cha slide", "Cha-Cha Slide"),
+            ("Cha Cha Slid", "Cha-Cha Slide"),
+        ] {
+            assert!(accepts(guess, answer), "{guess:?} should name {answer:?}");
+        }
+        for (guess, answer) in [
+            ("Waka", "Waka Waka (This Time for Africa)"),
+            ("Waka Flocka", "Waka Waka (This Time for Africa)"),
+            ("Please", "Please Please Please"),
+            ("Please Please", "Please Please Please"),
+            ("Please Help", "Please Please Please"),
+            ("Dai", "Dai Dai"),
+            ("Cha", "Cha-Cha Slide"),
+            ("Cha Slide", "Cha-Cha Slide"),
+        ] {
+            assert!(
+                !accepts(guess, answer),
+                "{guess:?} should not name {answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn qa_accept_and_reject_cases_still_hold() {
+        for (guess, answer) in [
+            ("Old Town Road", "Old Town Road (Remix)"),
+            ("A Bar Song", "A Bar Song (Tipsy)"),
+            ("Bar Song", "A Bar Song (Tipsy)"),
+            ("Dracula", "Dracula (JENNIE Remix)"),
+            ("Shakira - Waka Waka", "Waka Waka (This Time for Africa)"),
+            (
+                "Waka Waka ft. Freshlyground",
+                "Waka Waka (This Time for Africa)",
+            ),
+            (
+                "waka waka this time for africa",
+                "Waka Waka (This Time for Africa)",
+            ),
+        ] {
+            assert!(accepts(guess, answer), "{guess:?} should name {answer:?}");
+        }
+        for (guess, answer) in [
+            ("Road", "Old Town Road (Remix)"),
+            ("Bar", "A Bar Song (Tipsy)"),
+            ("JENNIE", "Dracula (JENNIE Remix)"),
+            ("Africa", "Waka Waka (This Time for Africa)"),
+            ("This Time for Africa", "Waka Waka (This Time for Africa)"),
+            ("Shakira", "Waka Waka (This Time for Africa)"),
+        ] {
+            assert!(
+                !accepts(guess, answer),
+                "{guess:?} should not name {answer:?}"
+            );
+        }
     }
 
     #[test]

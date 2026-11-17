@@ -107,32 +107,23 @@ pub(crate) fn resolve(
     Ok((mode_id, customize(base, &request.settings)?))
 }
 
-/// Longest mode name, in Unicode scalar values after trimming: what JavaScript's
-/// `Array.from(name).length` counts, so an emoji is one character on both sides.
+/// Longest mode name, in user-perceived characters (grapheme clusters) after
+/// trimming, so an emoji, even a ZWJ family, is one character.
 pub const MAX_MODE_NAME_CHARS: usize = 40;
 
-/// Invisible characters that could disguise a name: bidirectional marks,
-/// embeddings, overrides and isolates, zero-width spaces and joiners, and the BOM.
-fn hidden_character(c: char) -> bool {
-    matches!(c,
-        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}')
-}
-
-/// A trimmed mode name, or why it is refused.
-pub(crate) fn mode_name(name: &str) -> Result<&str, GameError> {
-    let name = name.trim();
-    if name.chars().any(hidden_character) {
-        return Err(GameError::InvalidModeName(
-            "Mode names can't contain invisible or direction-changing characters.",
-        ));
-    }
-    if !(1..=MAX_MODE_NAME_CHARS).contains(&name.chars().count()) {
-        return Err(GameError::InvalidModeName(
-            "Mode names are 1 to 40 characters.",
-        ));
-    }
-    Ok(name)
+/// A normalized mode name, or why it is refused. Mode names follow the nickname
+/// character rules (`database::nicknames::display_name`) with a 40-character limit.
+pub(crate) fn mode_name(name: &str) -> Result<String, GameError> {
+    use crate::database::nicknames::{NameProblem, display_name};
+    display_name(name, MAX_MODE_NAME_CHARS).map_err(|problem| {
+        GameError::InvalidModeName(match problem {
+            NameProblem::Hidden => {
+                "Mode names can't contain control, invisible or direction-changing characters."
+            }
+            NameProblem::Length => "Mode names are 1 to 40 characters.",
+            NameProblem::Stacked => "That mode name has too many stacked marks.",
+        })
+    })
 }
 
 /// A custom rule set on its default settings; the name is 1-40 characters trimmed.
@@ -142,7 +133,7 @@ pub(crate) fn custom_definition(
 ) -> Result<modes::Definition, GameError> {
     let name = mode_name(name)?;
     Ok(modes::Definition {
-        name: name.to_owned(),
+        name,
         rules,
         settings: modes::default_settings(&rules),
     })

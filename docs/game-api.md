@@ -38,9 +38,11 @@ the same shape as a listed mode:
  "prompts": [{"text": "A rainy day song"}, {"text": "A sunny one"}]}
 ```
 
-Validation matches a custom start: name 1–40 characters after trimming, counted as
-Unicode characters (`Array.from(name).length`), with no bidirectional controls or
-zero-width characters (`400 invalid_mode_name`, with a message to show). A name the
+Validation matches a custom start: the name follows the
+[nickname character rules](guest-join.md#nicknames) with a 40-character limit
+(trimmed, whitespace runs collapsed, 1–40 grapheme clusters, no control, invisible
+or bidirectional characters; ZWJ and variation selectors only inside emoji), else
+`400 invalid_mode_name` with a message to show. A name the
 caller already uses, or a preset's name, is saved with " 2" (" 3", ...) appended,
 ignoring case and shortened to fit, so read the returned `name`. Rules and
 settings fail as on start (`400 invalid_game_rules`, `400 invalid_game_settings`). `prompts` are optional
@@ -76,7 +78,7 @@ one of `mode_id` or `custom`, plus optional `settings` overrides:
 each at most once (a repeated key is `400 invalid_request`),
 otherwise `400 invalid_game_settings` with `setting` (the first rejected key) and
 `detail` (a field-level reason) added to the error body. A `custom` mode starts from Party's defaults;
-its name is 1–40 characters after trimming. Rule combinations the engine cannot run
+its name follows the same rules as a saved mode's. Rule combinations the engine cannot run
 return `400 invalid_game_rules` (`ballot: all` needs `winner: most_votes`;
 `ballot: pairs` needs `winner: pair_winners`). The snapshot's `mode_id` is the
 preset key or `custom`, and `mode` holds the resolved name, rules and settings.
@@ -113,7 +115,7 @@ Any other query string is `400 invalid_request`.
     "ballot": null,
     "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat", "votes": 2, "winner": true, "points": 20, "group": 0, "outcome": "won"}]},
     "now_playing": {"play_seq": 1, "round": 1, "hidden": false, "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat",
-      "start_seconds": 0, "started_at": "...", "ends_at": null},
+      "start_seconds": 0, "started_at": "...", "ends_at": null, "prompt": null},
     "guess": null, "up_next_count": 0,
     "scoreboard": [{"user_id": "7", "nickname": "Kat", "points": 20, "active": true}]
   }
@@ -125,7 +127,11 @@ the queue: every game commit increments it once. Count down to `phase_ends_at`
 using `server_time` as the reference, never the device clock; it is null in
 phases without a timer (`play`, `ended`). `total_rounds` is null for "until stopped".
 In prompt modes `prompt` is `{"number": 1, "text": "...", "image_id": "..."}` for the
-current round while the game runs, otherwise null.
+current round while the game runs, otherwise null. `now_playing.prompt` has the same
+shape for the round whose song is playing (`now_playing.round`), so with overlap a
+`play` phase that is still playing an earlier round's winner can show that song's
+prompt; it is null in modes without prompts. Both only ever name rounds the game has
+reached.
 
 Visibility rules: `my_submissions` holds only the caller's own songs for the current
 round; others are counted in `submission_count` without identities. `ballot` exists
@@ -136,7 +142,8 @@ vote closes. Each result entry's `points` is what that song earned (a player wit
 songs gets two amounts), `winner` means the song plays, `group` is its pair (0 for a
 single ballot) and `outcome` is `won`, `lost`, `tie` (its pair ended level) or `bye`.
 Entries are ordered by `group`, the playing song first. `scoreboard` lists active members (including zero scores) and departed
-accounts that scored (`active: false`), highest first, ties by account ID.
+(left or removed) accounts with more than 0 points (`active: false`), highest first,
+ties by account ID; a departed account with 0 points is not listed.
 
 ## Phases (Party, Speed Round, Duel)
 
@@ -266,7 +273,7 @@ Prompt modes (`prompt` rule `text` or `image`, such as Picture This) take a
 prompt `none` take none. Anything else is `400 invalid_game_prompts`; an image that
 is not in this lobby is `404 game_image_unavailable`. `rounds: 0` plays one round
 per prompt and a smaller `rounds` stops early. Only the current round's prompt is
-ever in a snapshot.
+ever in a snapshot, plus the playing song's (an earlier round's, under overlap).
 
 Images are host-only. Upload with `POST .../game/images` as `multipart/form-data`
 with exactly one file field named `image` (other or repeated fields are

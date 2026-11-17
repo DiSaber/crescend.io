@@ -642,3 +642,67 @@ async fn duplicate_mode_names_get_a_number() {
         ));
     }
 }
+
+// Mode names follow the nickname character rules, with 40 characters.
+#[tokio::test]
+async fn mode_names_share_the_nickname_character_rules() {
+    use crate::game::mode_name;
+    for bad in [
+        "a\u{0000}b",
+        "a\nb",
+        "a\tb",
+        "a\u{2028}b",
+        "a\u{2029}b",
+        "a\u{00AD}b",
+        "a\u{0085}b",
+        "a\u{200C}b",
+        "a\u{2060}b",
+        "a\u{202A}b",
+        "Kat\u{FE0F}",
+        "Kat\u{200D}",
+    ] {
+        assert!(
+            matches!(mode_name(bad), Err(GameError::InvalidModeName(_))),
+            "{bad:?} should be refused"
+        );
+    }
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+    let flag = "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}";
+    for good in [
+        "Kat\u{2764}\u{FE0F}",
+        family,
+        flag,
+        "1\u{FE0F}\u{20E3} round",
+    ] {
+        assert_eq!(mode_name(good).unwrap(), good);
+    }
+    assert_eq!(
+        mode_name(&family.repeat(40)).unwrap(),
+        family.repeat(40),
+        "a ZWJ family is one character"
+    );
+    assert!(mode_name(&family.repeat(41)).is_err());
+    let padded = format!("  {}  ", "B".repeat(40));
+    assert_eq!(mode_name(&padded).unwrap(), "B".repeat(40), "trimmed first");
+    assert_eq!(mode_name("  Rainy   Duel ").unwrap(), "Rainy Duel");
+    // Nicknames use the very same rules.
+    assert_eq!(crate::database::nicknames::normalize("a\u{2028}b"), None);
+
+    // A clash keeps whole emoji when it shortens the name for the suffix.
+    let f = Fixture::new().await;
+    let lobby = f.lobby(0).await;
+    let rules: Rules = serde_json::from_value(json!({"prompt":"none","collect":"pick","ballot":"all","winner":"most_votes","challenge":"listen","scoring":"votes_to_picker"})).unwrap();
+    let definition = crate::game::custom_definition(&family.repeat(40), rules).unwrap();
+    let mut names = Vec::new();
+    for _ in 0..2 {
+        names.push(
+            f.database
+                .save_game_mode(&lobby.host, &definition, &[], || f.now())
+                .await
+                .unwrap()
+                .definition
+                .name,
+        );
+    }
+    assert_eq!(names[1], format!("{} 2", family.repeat(38)));
+}

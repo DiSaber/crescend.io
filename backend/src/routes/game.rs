@@ -598,7 +598,11 @@ impl GameError {
                 "own_song",
                 "This is your song; you score when others guess it.",
             ),
-            Self::GuessLimit => (409, "guess_limit_reached", "No guesses left this round."),
+            Self::GuessLimit => (
+                409,
+                "guess_limit_reached",
+                "That isn't it. Only the right answer counts now.",
+            ),
             Self::InvalidPrompts => (
                 400,
                 "invalid_game_prompts",

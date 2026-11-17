@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deleteMode, limitModeName, listModes, modeNameError, playerWarning, saveMode, serverSettingErrors, startGame, type GameMode } from "../../lib/game";
+import { deleteMode, limitModeName, listModes, modeNameError, modeNameLength, playerWarning, saveMode, serverSettingErrors, startGame, type GameMode } from "../../lib/game";
 import PromptEditor, { checkPrompts, newPrompt, type PromptDraft } from "./PromptEditor";
 import SettingsForm, { draftFrom, parseDraft, type Draft } from "./SettingsForm";
+import { normalizeNickname } from "../../lib/lobby";
 import type { QueueSession, SessionSnapshot } from "../../lib/queue-state";
 
 /**
@@ -29,6 +30,8 @@ export default function GameSetup({ session, state, onClose }: {
     const limited = limitModeName(text);
     setSaveName(limited.value); setNameCut(limited.truncated);
     setSaving(s => (s.error ? {} : s));
+    // A new name is a new attempt: the last start rejection no longer applies.
+    setError(null);
   };
   const [saving, setSaving] = useState<{ busy?: boolean; message?: string; error?: string }>({});
   const busy = state.gameBusy;
@@ -63,7 +66,7 @@ export default function GameSetup({ session, state, onClose }: {
 
   async function start(mode: GameMode) {
     if (!parsed?.valid || !promptCheck || promptCheck.problem) return;
-    setError(null);
+    setError(null); setSaving({});
     const body = { mode_id: mode.id, settings: parsed.values, ...(mode.rules.prompt === "none" ? {} : { prompts: promptCheck.prompts }) };
     try {
       await session.gameMutate("Starting…", m => startGame(m, body));
@@ -77,7 +80,7 @@ export default function GameSetup({ session, state, onClose }: {
   }
 
   async function save(mode: GameMode) {
-    const name = saveName.trim();
+    const name = normalizeNickname(saveName);
     if (!parsed?.valid || !name || modeNameError(name)) return;
     // Only text prompts can be kept: uploaded images belong to this lobby.
     const keep = mode.rules.prompt === "text" && promptCheck && !promptCheck.problem ? promptCheck.prompts : undefined;
@@ -86,7 +89,12 @@ export default function GameSetup({ session, state, onClose }: {
       const saved = await saveMode({ name, rules: mode.rules, settings: parsed.values, ...(keep ? { prompts: keep } : {}) });
       setModes(list => [...(list ?? []), saved]);
       // The server makes a repeated name unique (" 2"), so say what it was saved as.
-      setSaving({ message: saved.name === name ? `Saved “${saved.name}” to My modes.` : `You already have “${name}”, so this one is saved as “${saved.name}”.` });
+      const preset = (modes ?? []).some(m => m.preset && m.name.toLowerCase() === name.toLowerCase());
+      setSaving({
+        message: saved.name === name ? `Saved “${saved.name}” to My modes.`
+          : preset ? `That name is taken by a built-in mode, so this one is saved as “${saved.name}”.`
+          : `You already have “${name}”, so this one is saved as “${saved.name}”.`,
+      });
       setSaveName(""); setNameCut(false); setFieldErrors({}); setError(null);
     } catch (e) {
       const fields = serverSettingErrors(e);
@@ -137,7 +145,7 @@ export default function GameSetup({ session, state, onClose }: {
             {mine.map(mode => (
               <li key={mode.id} className={`flex flex-wrap items-center gap-2 rounded-lg border p-3 ${selected?.id === mode.id ? "border-[#FF0048] bg-[#5C172E]/60" : "border-zinc-700 bg-zinc-800"}`}>
                 <div className="min-w-0 flex-1 basis-40">
-                  <p className="font-bold truncate">{mode.name}</p>
+                  <p className="font-bold truncate" title={mode.name}>{mode.name}</p>
                   <p className="text-xs text-zinc-400">{summary(mode)}</p>
                 </div>
                 <button onClick={() => choose(mode)} aria-label={`Use ${mode.name}`} className="min-h-11 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 font-semibold">Use</button>
@@ -151,7 +159,7 @@ export default function GameSetup({ session, state, onClose }: {
         <div className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between gap-3">
             <h3 className="text-lg font-bold">Customize {selected.name}</h3>
-            <button type="button" onClick={() => editDraft(draftFrom(selected.settings))} className="min-h-11 px-2 text-sm text-zinc-400 underline hover:text-white">Reset</button>
+            <button type="button" onClick={() => { editDraft(draftFrom(selected.settings)); setSaving({}); }} className="min-h-11 px-2 text-sm text-zinc-400 underline hover:text-white">Reset</button>
           </div>
           {selected.rules.challenge === "guess_title" && (
             <div className="rounded-lg bg-amber-950/60 border border-amber-800 p-3 text-sm text-amber-200">
@@ -178,7 +186,7 @@ export default function GameSetup({ session, state, onClose }: {
               <button type="submit" disabled={!saveName.trim() || !!nameProblem || !parsed?.valid || saving.busy} className="min-h-11 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 font-semibold disabled:opacity-50">{saving.busy ? "Saving…" : "Save"}</button>
             </div>
             <p id="save-mode-hint" className={`text-xs ${nameProblem || nameCut ? "text-amber-300" : "text-zinc-400"}`} role={nameProblem || nameCut ? "status" : undefined}>
-              {nameProblem ?? (nameCut ? "Names are up to 40 characters, so the rest was cut." : `${Array.from(saveName).length}/40 characters`)}
+              {nameProblem ?? (nameCut ? "Names are up to 40 characters, so the rest was cut." : `${modeNameLength(saveName)}/40 characters`)}
             </p>
             <p className="text-xs text-zinc-400">
               Saves these settings privately for your account.{selected.rules.prompt === "image" ? " Images aren't saved; add them each time." : selected.rules.prompt === "text" ? " Text prompts are saved too." : ""}

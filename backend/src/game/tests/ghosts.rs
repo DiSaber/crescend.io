@@ -46,14 +46,14 @@ async fn removing_a_ghost_mid_pick_closes_the_phase_early_and_keeps_their_points
         Phase::Vote,
         "the phase was only waiting on the ghost"
     );
-    // The ghost stays on the scoreboard, marked as gone.
-    let entry = view
-        .scoreboard
-        .iter()
-        .find(|e| e.user_id == ghost.id.to_string());
-    if let Some(entry) = entry {
-        assert!(!entry.active);
-    }
+    // A departed member stays on the scoreboard only when they scored.
+    assert!(
+        !view
+            .scoreboard
+            .iter()
+            .any(|e| e.user_id == ghost.id.to_string()),
+        "a 0-point departed member is left off"
+    );
 }
 
 #[tokio::test]
@@ -70,6 +70,24 @@ async fn a_member_away_for_a_minute_is_not_waited_for_but_the_host_always_is() {
     crate::lobbies::presence::mark_away(&id, ghost.id, 600);
     f.database.settle_presence(&id, || f.now()).await.unwrap();
     assert_eq!(f.view(ann, am).await.phase, Phase::Collect);
+    // The roster marks the skipped member away, never the host.
+    let members = f
+        .database
+        .current_lobby(ann.id, || f.now())
+        .await
+        .unwrap()
+        .lobby
+        .unwrap()
+        .members;
+    let away = |user: i64| {
+        members
+            .iter()
+            .find(|m| m.user_id == user.to_string())
+            .unwrap()
+            .away
+    };
+    assert!(away(ghost.id));
+    assert!(!away(lobby.host.id) && !away(ann.id));
     crate::lobbies::presence::forget(&id, lobby.host.id);
     f.submit(&lobby.host, &lobby.host_membership, "dQw4w9WgXcQ")
         .await

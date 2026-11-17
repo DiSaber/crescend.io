@@ -454,3 +454,62 @@ async fn text_prompts_follow_their_rule_and_cap_the_rounds() {
     );
     assert_eq!(schema[0].label, "Rounds (0 = one per prompt)");
 }
+
+#[tokio::test]
+async fn overlap_play_carries_the_prompt_of_the_round_that_is_playing() {
+    let f = Fixture::new().await;
+    let lobby = f.lobby(1).await;
+    let (a, am) = &lobby.guests[0];
+    let rules = json!({"prompt":"text","collect":"pick","ballot":"all","winner":"most_votes","challenge":"listen","scoring":"votes_to_picker"});
+    let game = start_prompts(
+        &f,
+        &lobby,
+        json!({"custom": {"name": "Prompts", "rules": rules},
+               "prompts": [{"text": "A rainy day song"}, {"text": "Best car song"}, {"text": "Third"}]}),
+    )
+    .await
+    .unwrap()
+    .game
+    .unwrap();
+    assert!(game.mode.settings.overlap_next_round);
+    assert!(game.now_playing.is_none());
+    let host_pick = f
+        .submit(&lobby.host, &lobby.host_membership, "hosthost01")
+        .await
+        .unwrap();
+    let a_pick = f.submit(a, am, "guestaaa01").await.unwrap();
+    f.vote(&lobby.host, &lobby.host_membership, &a_pick.submission_id)
+        .await
+        .unwrap();
+    let game = f
+        .vote(a, am, &host_pick.submission_id)
+        .await
+        .unwrap()
+        .game
+        .game
+        .unwrap();
+    // Round 2 collects while round 1's winner plays: each carries its own prompt.
+    assert_eq!((game.round, game.phase), (2, Phase::Collect));
+    assert_eq!(game.prompt.as_ref().unwrap().number, 2);
+    for view in [
+        game,
+        f.view(a, am).await,
+        f.database
+            .game_view(&lobby.host, &lobby.host_membership, true, || f.now())
+            .await
+            .unwrap()
+            .game
+            .unwrap(),
+    ] {
+        let playing = view.now_playing.unwrap();
+        assert_eq!(playing.round, 1);
+        let prompt = playing.prompt.unwrap();
+        assert_eq!(prompt.number, 1);
+        assert_eq!(prompt.text.as_deref(), Some("A rainy day song"));
+        assert_eq!(
+            view.prompt.unwrap().text.as_deref(),
+            Some("Best car song"),
+            "the snapshot's own prompt stays the current round's"
+        );
+    }
+}

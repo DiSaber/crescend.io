@@ -143,8 +143,9 @@ skip-vote majority.
 
 - **Host removal**: `DELETE /api/lobbies/memberships/{host membership}/members/{user_id}`
   (see [lobby API](lobby-api.md#remove-a-member)). It works like that member leaving:
-  their skip votes stop counting, a game phase waiting only on them closes, and their
-  points stay on the scoreboard marked "(left)". Their streams end with
+  their skip votes stop counting, a game phase waiting only on them closes, and if
+  they scored they stay on the scoreboard marked "(left)" (with 0 points they drop
+  off it). Their streams end with
   `membership_ended` reason `removed` ("The host removed you from the session. You can
   rejoin with the code."). It is not a ban: they can rejoin with the code and get their
   name back.
@@ -154,7 +155,9 @@ skip-vote majority.
   not count toward the skip-vote guest count. It stays a member (points, songs and name
   stay) and counts again as soon as it reconnects. When the minute passes, the backend
   settles the lobby (recounts the queue, lets the game phase close) and bumps the
-  revision so everyone refetches. The host is never skipped. Accounts never seen on a
+  revision so everyone refetches; reconnecting does the same. While skipped, the
+  member has `away: true` in `members[]` and the host's people list tags them "away".
+  The host is never skipped. Accounts never seen on a
   stream (a member who hasn't opened the lobby page yet, API clients) count as present.
   Presence is kept in memory: after a restart, ghosts count again until they are
   removed. A phone with the screen locked may drop its stream; it counts again once the

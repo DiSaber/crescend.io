@@ -11,6 +11,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Saved modes one account may keep.
 pub const MAX_SAVED_MODES: i64 = 50;
@@ -61,7 +62,7 @@ pub(crate) async fn log_mode(
 
 /// The definition with a name none of the owner's saved modes or the presets use
 /// (compared ignoring case): "Party night", then "Party night 2", "Party night 3".
-/// The base is shortened when needed so the suffixed name stays within 40 chars.
+/// The base is shortened by whole characters so the suffixed name stays within 40.
 async fn unique_name(
     tx: &mut Transaction<'_, Sqlite>,
     owner: i64,
@@ -89,7 +90,8 @@ async fn unique_name(
         n += 1;
         let suffix = format!(" {n}");
         let room = crate::game::MAX_MODE_NAME_CHARS - suffix.chars().count();
-        let stem: String = base.chars().take(room).collect();
+        // Whole characters only, so an emoji is never split.
+        let stem: String = base.graphemes(true).take(room).collect();
         name = format!("{}{suffix}", stem.trim_end());
     }
     Ok(Definition {

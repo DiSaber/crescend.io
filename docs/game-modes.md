@@ -184,7 +184,10 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   (answers of 1-3 letters), 1 (4-8), 2 (9-14) or length/7 (longer) of the answer, or
   if it contains every significant answer word (stopwords like "the", "of" optional;
   words of 5+ letters may have one typo) with at most three extra words, so "queen
-  bohemian rhapsody" counts but a list of titles does not.
+  bohemian rhapsody" counts but a list of titles does not. Each guess word counts
+  for one answer word, so a repeated word must be typed as often as the title has
+  it: "Waka" or "Waka Flocka" does not name "Waka Waka", nor "Cha Slide" "Cha-Cha
+  Slide".
 - **`GuessSpeed` points (G3).** A correct guess earns 50 plus up to 50 in proportion
   to the time left, and the first correct guesser adds 25 (so 125 at best, 50 at the
   buzzer). The proposer earns 20 per correct guesser at the reveal: a song nobody
@@ -286,6 +289,10 @@ completed; these are the rules decided from what they found.
   `409 not_enough_players`; setup warns and disables Start.
 - **Own pair.** A vote for the other song in your own pair returns `409 own_pair`
   ("Your song is in this pair") instead of the self-vote error.
+- **Empty rounds and small Duels.** A round nobody picked a song for says "Round 1:
+  nobody picked a song." on phones, the TV board and the announcer. When a running
+  Duel drops below 3 members, phones and the board show "Duel needs 3 players for
+  voting; remaining pairs are ties until more join."
 
 **Name That Tune**
 
@@ -297,7 +304,8 @@ completed; these are the rules decided from what they found.
   Setup warns when the lobby has fewer than 3 players.
 - **Guess limit.** Only wrong guesses count toward the 10. A wrong guess past the
   limit is refused without counting; a right one is accepted. The phone shows the
-  remaining count from the server snapshot and a message when the box is disabled.
+  remaining count from the server snapshot; at zero the box stays usable and says
+  "No wrong guesses left: only the right answer counts now."
 - **Ending.** Ending mid-guess closes the round first (the proposer scores for anyone
   who named it) and the final screen reveals the song (`note: ended_early`). A game
   with no proposals ends with "Nobody proposed a song." (`note: no_proposals`).
@@ -318,6 +326,8 @@ completed; these are the rules decided from what they found.
 - **Overlap headings.** With `overlap_next_round`, the play heading names the round
   of the song actually playing (`now_playing.round`), and a newer round's results
   are labelled "Up next" until its songs play.
+  During `play` the phones and the TV board also show that song's prompt
+  (`now_playing.prompt`) instead of the current round's.
 - **Points per song.** `points` on each result entry is what that song earned, so a
   player with two songs sees each one's share; the scoreboard adds them up.
 - **Jukebox resume.** The host's jukebox player saves its position each second (and
@@ -328,14 +338,23 @@ completed; these are the rules decided from what they found.
 **Customize form and My modes**
 
 - **+/-** move one step in the pressed direction from an off-step value (47 with
-  steps of 5 goes to 50 or 45) and bring out-of-range values back inside.
+  steps of 5 goes to 50 or 45) and both bring out-of-range values back inside (400
+  goes to the top of the range with either button, so neither is disabled then);
+  a button is disabled only at its own end of the range.
 - **Summary.** The line next to Start names the fields to fix. Server errors clear on
   Reset, on any edit and after a successful save.
-- **Mode names** are 1-40 Unicode characters after trimming on both sides (the form
-  counts with `Array.from`, so an emoji is one; the browser's `maxLength` counted
-  two) and says when a paste was cut. Bidirectional controls and zero-width
-  characters are refused (`400 invalid_mode_name`). A name the account already uses,
-  or a preset's name, gets " 2", " 3" appended (ignoring case), shortened to fit 40.
+- **Mode names** follow the [nickname character rules](guest-join.md#nicknames),
+  one shared validator (`nicknames::display_name`) with a 40-character limit:
+  trimmed, inner whitespace runs collapsed, 1-40 user-perceived characters
+  (grapheme clusters, so a ZWJ family or flag emoji is one), no control characters
+  (U+0000, newlines, U+2028/2029 included), soft hyphens, zero-width or
+  bidirectional characters, and joiners or variation selectors only inside emoji
+  (`400 invalid_mode_name`). The form applies the same rules, trims before cutting a
+  paste at 40 and says when it cut. A name the account already uses, or a preset's
+  name, gets " 2", " 3" appended (ignoring case), shortened by whole characters to
+  fit 40; a preset clash says "That name is taken by a built-in mode, so this one is
+  saved as “Duel 2”." The "Saved" notice clears on Reset and Start, and typing a
+  name clears a start rejection.
 - **Duplicate settings keys** in a start or save body (`{"rounds": 3, "rounds": 50}`)
   are `400 invalid_request`, instead of the last value silently winning.
 

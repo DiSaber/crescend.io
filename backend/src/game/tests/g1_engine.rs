@@ -69,6 +69,7 @@ async fn party_round_collects_votes_scores_and_overlaps_the_next_round() {
     assert_eq!(playing.song.as_ref().unwrap().video_id, "guestaaa01");
     assert_eq!(playing.submitted_by_user_id, Some(a.id.to_string()));
     assert_eq!(playing.ends_at, None, "Party plays full songs");
+    assert!(playing.prompt.is_none(), "Party has no prompts");
     let result = game.last_result.unwrap();
     assert_eq!(result.round, 1);
     assert!(result.entries[0].winner);

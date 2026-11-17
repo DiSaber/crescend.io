@@ -790,6 +790,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
             start_seconds: game.definition.settings.clip_start_seconds,
             started_at: utc(started)?,
             ends_at: ends.map(utc).transpose()?,
+            prompt: prompt_for(game, round),
         });
     }
     let guess = if matches!(game.phase, Phase::Guess | Phase::Reveal) {
@@ -840,7 +841,11 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
     for member in &active {
         scores.entry(*member).or_insert(0);
     }
-    let mut scoreboard: Vec<(i64, i64)> = scores.into_iter().collect();
+    // Active members always show; departed ones only when they scored.
+    let mut scoreboard: Vec<(i64, i64)> = scores
+        .into_iter()
+        .filter(|(user_id, points)| *points > 0 || active.contains(user_id))
+        .collect();
     scoreboard.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(GameView {
         id: game.id.clone(),
@@ -883,12 +888,18 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
 
 /// Only the round's own prompt is ever sent; later prompts stay with the host.
 fn current_prompt(game: &Game) -> Option<PromptView> {
-    if game.status != GameStatus::Running {
+    prompt_for(game, game.round)
+}
+
+/// The prompt of `round` while the game runs, for a round the game has reached (the
+/// current one, or an earlier one whose song is still playing under overlap).
+fn prompt_for(game: &Game, round: i64) -> Option<PromptView> {
+    if game.status != GameStatus::Running || round < 1 || round > game.round {
         return None;
     }
-    let index = usize::try_from(game.round - 1).ok()?;
+    let index = usize::try_from(round - 1).ok()?;
     game.prompts.get(index).map(|prompt| PromptView {
-        number: game.round,
+        number: round,
         text: prompt.text.clone(),
         image_id: prompt.image_id.clone(),
     })

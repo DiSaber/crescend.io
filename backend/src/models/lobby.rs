@@ -112,6 +112,9 @@ pub struct MemberView {
     pub nickname: String,
     #[schema(value_type = String, format = DateTime)]
     pub joined_at: DateTime<Utc>,
+    /// True when the member has had no open event stream for over a minute, so the
+    /// game and the skip-vote majority stop waiting for them. Never true for the host.
+    pub away: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
