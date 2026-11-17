@@ -625,6 +625,20 @@ async fn settle(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<bool, Game
     Ok(changed)
 }
 
+/// A member left the lobby. Their departure can complete the open phase (everyone
+/// still here has picked, voted or guessed), so settle now rather than at the timer.
+/// The caller's commit bumps the revision.
+pub(super) async fn settle_after_leave(
+    tx: &mut Tx<'_>,
+    lobby: &str,
+    now: i64,
+) -> Result<bool, GameError> {
+    let Some(mut game) = load(tx, lobby).await? else {
+        return Ok(false);
+    };
+    settle(tx, &mut game, now).await
+}
+
 async fn song(tx: &mut Tx<'_>, submission: &str) -> Result<(GameSong, i64), GameError> {
     let row = sqlx::query("SELECT * FROM game_submissions WHERE id = ?")
         .bind(submission)

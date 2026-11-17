@@ -26,7 +26,11 @@ pub enum GameError {
     MediaType,
     ModeUnavailable,
     InvalidRules,
-    InvalidSettings,
+    /// The rejected key and why, both safe to show.
+    InvalidSettings {
+        setting: String,
+        detail: String,
+    },
     GameRunning,
     NotRunning,
     PhaseClosed,
@@ -117,7 +121,10 @@ pub(crate) fn customize(
 ) -> Result<modes::Definition, GameError> {
     modes::customize(base, settings).map_err(|error| match error {
         modes::ModeError::Rules(_) => GameError::InvalidRules,
-        modes::ModeError::Setting(_) => GameError::InvalidSettings,
+        modes::ModeError::Setting { key, message } => GameError::InvalidSettings {
+            setting: key,
+            detail: message,
+        },
     })
 }
 

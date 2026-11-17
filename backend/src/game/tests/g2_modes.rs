@@ -167,7 +167,7 @@ async fn start_settings_are_validated_against_the_schema() {
         assert!(
             matches!(
                 f.start_with(&lobby, "party", bad.clone()).await,
-                Err(GameError::InvalidSettings)
+                Err(GameError::InvalidSettings { .. })
             ),
             "{bad}"
         );
@@ -175,7 +175,7 @@ async fn start_settings_are_validated_against_the_schema() {
     assert!(matches!(
         f.start_with(&lobby, "duel", json!({"votes_per_player": 2}))
             .await,
-        Err(GameError::InvalidSettings)
+        Err(GameError::InvalidSettings { .. })
     ));
     let game = f
         .start_with(&lobby, "party", json!({"rounds": 2, "collect_seconds": 10, "play_seconds": 30, "clip_start_seconds": 15}))
@@ -332,7 +332,27 @@ async fn http_lists_all_presets_and_maps_settings_errors() {
         assert_eq!(response.status(), 400);
         let error: serde_json::Value = response.json().await.unwrap();
         assert_eq!(error["code"], code);
+        if code == "invalid_game_settings" {
+            assert_eq!(error["setting"], "rounds");
+            assert_eq!(error["detail"], "must be a whole number");
+        } else {
+            assert!(error.get("setting").is_none());
+        }
     }
+    let response = f
+        .request(reqwest::Method::POST, url.clone(), &lobby.host)
+        .json(&json!({"mode_id": "party", "settings": {"vote_seconds": 17}}))
+        .send()
+        .await
+        .unwrap();
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["setting"], "vote_seconds");
+    assert!(
+        error["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("must be between")
+    );
     let response = f
         .request(reqwest::Method::POST, url, &lobby.host)
         .json(&json!({"mode_id": "speed_round", "settings": {"rounds": 3}}))

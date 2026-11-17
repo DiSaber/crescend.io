@@ -256,7 +256,7 @@ async fn guesses_are_limited_and_the_round_count_follows_settings_and_proposals(
     assert!(matches!(
         f.start_with(&lobby, "name_that_tune", json!({"play_seconds": 5}))
             .await,
-        Err(GameError::InvalidSettings)
+        Err(GameError::InvalidSettings { .. })
     ));
     f.start_with(
         &lobby,

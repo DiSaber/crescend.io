@@ -533,7 +533,7 @@ impl GameError {
                 "invalid_game_rules",
                 "That combination of rules cannot run together.",
             ),
-            Self::InvalidSettings => (
+            Self::InvalidSettings { .. } => (
                 400,
                 "invalid_game_settings",
                 "Settings must match the mode's settings schema.",
@@ -660,8 +660,11 @@ impl GameError {
 impl IntoResponse for GameError {
     fn into_response(self) -> Response {
         let (status, code, message) = self.parts();
-        let mut response =
-            ApiError::new(StatusCode::from_u16(status).unwrap(), code, message).into_response();
+        let mut error = ApiError::new(StatusCode::from_u16(status).unwrap(), code, message);
+        if let Self::InvalidSettings { setting, detail } = self {
+            error = error.with_setting(setting, detail);
+        }
+        let mut response = error.into_response();
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());

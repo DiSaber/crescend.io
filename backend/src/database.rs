@@ -41,10 +41,13 @@ impl Database {
             .expect("Url should be valid")
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
-            .busy_timeout(Duration::from_secs(1))
+            // Writes serialize (BEGIN IMMEDIATE). Twenty players acting in the same
+            // second queue up for well over one second on a slow host, so wait rather
+            // than answer 503 (G6 load test).
+            .busy_timeout(Duration::from_secs(5))
             .create_if_missing(true);
         let db_pool = SqlitePoolOptions::new()
-            .acquire_timeout(Duration::from_secs(1))
+            .acquire_timeout(Duration::from_secs(5))
             .connect_with(opts)
             .await?;
 

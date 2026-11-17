@@ -231,7 +231,11 @@ fn specs(rules: &Rules) -> Vec<Spec> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ModeError {
     Rules(&'static str),
-    Setting(String),
+    /// The rejected key and a message safe to show next to that field.
+    Setting {
+        key: String,
+        message: String,
+    },
 }
 
 /// Applies `overrides` on top of `definition`, enforcing the served schema: only
@@ -244,20 +248,37 @@ pub fn customize(
     definition.rules.validate().map_err(ModeError::Rules)?;
     let exposed = specs(&definition.rules);
     for (key, value) in overrides {
-        let spec = exposed
-            .iter()
-            .find(|spec| spec.key == key)
-            .ok_or_else(|| ModeError::Setting(format!("unknown setting {key}")))?;
+        let spec =
+            exposed
+                .iter()
+                .find(|spec| spec.key == key)
+                .ok_or_else(|| ModeError::Setting {
+                    key: key.clone(),
+                    message: format!("unknown setting {key}"),
+                })?;
         let value = match spec.kind {
             SettingType::Boolean => value.as_bool().map(i64::from),
             SettingType::Integer => value.as_i64().filter(|_| !value.is_f64()),
         }
-        .ok_or_else(|| ModeError::Setting(format!("{key} has the wrong type")))?;
+        .ok_or_else(|| ModeError::Setting {
+            key: key.clone(),
+            message: match spec.kind {
+                SettingType::Boolean => "must be on or off".to_owned(),
+                SettingType::Integer => "must be a whole number".to_owned(),
+            },
+        })?;
         if !(spec.min..=spec.max).contains(&value) || (value - spec.min) % spec.step != 0 {
-            return Err(ModeError::Setting(format!(
-                "{key} must be between {} and {} in steps of {}",
-                spec.min, spec.max, spec.step
-            )));
+            return Err(ModeError::Setting {
+                key: key.clone(),
+                message: if spec.step == 1 {
+                    format!("must be between {} and {}", spec.min, spec.max)
+                } else {
+                    format!(
+                        "must be between {} and {} in steps of {}",
+                        spec.min, spec.max, spec.step
+                    )
+                },
+            });
         }
         definition.settings.set(key, value);
     }
@@ -445,7 +466,7 @@ mod tests {
             assert!(
                 matches!(
                     customize(party(), &overrides(bad.clone())),
-                    Err(ModeError::Setting(_))
+                    Err(ModeError::Setting { .. })
                 ),
                 "{bad}"
             );
