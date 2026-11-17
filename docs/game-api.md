@@ -99,11 +99,11 @@ Any active member reads `GET .../game` (bodyless):
     "my_submissions": [{"id": "...", "song": {"video_id": "...", "title": "...", "author_name": "...", "thumbnail_url": "...", "embed_url": "..."}}],
     "submission_count": 3,
     "ballot": null,
-    "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "votes": 2, "winner": true, "points": 20}]},
-    "now_playing": {"play_seq": 1, "round": 1, "hidden": false, "song": {...}, "submitted_by_user_id": "7",
+    "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat", "votes": 2, "winner": true, "points": 20}]},
+    "now_playing": {"play_seq": 1, "round": 1, "hidden": false, "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat",
       "start_seconds": 0, "started_at": "...", "ends_at": null},
     "guess": null, "up_next_count": 0,
-    "scoreboard": [{"user_id": "7", "points": 20, "active": true}]
+    "scoreboard": [{"user_id": "7", "nickname": "Kat", "points": 20, "active": true}]
   }
 }
 ```
@@ -162,7 +162,7 @@ on every change.
   that will play (all proposals, or `rounds` if smaller).
 - **guess**: one proposal plays as a clip from `start_seconds` for `play_seconds`
   (`phase_ends_at`). For everyone but the host, `now_playing` is
-  `{"hidden": true, "song": null, "submitted_by_user_id": null, ...}`; the host's
+  `{"hidden": true, "song": null, "submitted_by_user_id": null, "submitted_by_nickname": null, ...}`; the host's
   player gets the video and must show it per [the policy decision](game-modes.md#hidden-title-what-youtubes-policies-allow-checked-2026-11-05).
   `guess` in the snapshot is the caller's standing: `eligible` (false for the host
   and the proposer), `own_song`, `correct`, `points`, `wrong_guesses`,

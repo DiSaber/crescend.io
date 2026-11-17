@@ -102,6 +102,9 @@ pub struct MemberView {
     #[schema(pattern = "^[0-9]+$")]
     pub user_id: String,
     pub role: MemberRole,
+    /// This member's name in this lobby: 1-24 characters, unique in the lobby.
+    /// Plain text chosen by the member; render it as text, never as HTML.
+    pub nickname: String,
     #[schema(value_type = String, format = DateTime)]
     pub joined_at: DateTime<Utc>,
 }
@@ -134,6 +137,19 @@ pub struct CurrentLobby {
 pub struct JoinLobbyRequest {
     /// Six ASCII letters/digits, ignoring surrounding ASCII whitespace and case.
     pub join_code: String,
+    /// Optional name for this lobby: 1-24 characters after trimming, no control
+    /// characters. A clash in the lobby gets " 2", " 3", ... appended. When absent the
+    /// member keeps their name in this lobby, or gets their last nickname.
+    #[serde(default)]
+    pub nickname: Option<String>,
+}
+
+/// Optional body of lobby creation; an empty body is still accepted.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateLobbyRequest {
+    /// The host's name in the new lobby, with the same rules as joining.
+    pub nickname: String,
 }
 
 impl JoinLobbyRequest {

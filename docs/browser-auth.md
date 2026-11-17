@@ -67,6 +67,10 @@ The refresh cookie does not authorize lobby creation. Refresh and logout do not 
 
 Lobby creation requires an empty body and now returns **201** with an object, replacing the old 200/string response. The creator is the sole owner and first member, and the lobby expires 24 hours after creation. See [lobby API](lobby-api.md) for the response and errors. The development database reset for this change discards old accounts and refresh sessions; sign in again after upgrading. Joining, current-lobby retrieval, updates, and leaving are implemented; see [lobby API](lobby-api.md).
 
+## Guest sign-in
+
+Joining does not need Google. `POST /api/auth/guest` (same CSRF header and empty body as refresh) issues the same refresh cookie and access-token JSON for a guest account, and sets the long-lived HttpOnly `crescend_guest` cookie that restores that account in the same browser. It is a deliberate sign-in like Google login: it clears a stopped coordinator and runs under the same lock (`AuthCoordinator.guestSignIn`). Guests cannot create lobbies. `GET /api/auth/guest` reports the browser's last guest nickname without signing in, and `GET /api/me` says whether the bearer is a guest. 429 `too_many_guests` limits new guest accounts per client address. See [guest join](guest-join.md).
+
 ## Serialize refresh and logout
 
 Use one origin-wide queue for both operations, across requests and tabs. An origin-wide Web Lock (as above) can serialize network calls; coordinate in-memory access-token delivery and logout events through BroadcastChannel. A waiting tab may refresh sequentially using the browser's updated cookie. Do not cache a refresh credential or start parallel refreshes. Consumed-token reuse revokes the entire session; there is no retry grace period.

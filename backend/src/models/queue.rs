@@ -93,8 +93,11 @@ pub struct QueueEntry {
     pub id: EntryId,
     pub video: crate::models::youtube::VideoMetadata,
     pub submitted_by_user_id: String,
+    /// The submitter's name in this lobby ("added by"), kept after they leave.
+    pub submitted_by_nickname: String,
     #[schema(value_type = String, format = DateTime)]
     pub submitted_at: DateTime<Utc>,
+
     pub active_vote_count: i64,
     pub has_voted: bool,
 }

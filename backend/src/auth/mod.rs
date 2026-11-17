@@ -2,6 +2,7 @@ pub mod browser;
 mod config;
 pub mod destination;
 mod google;
+pub mod guest;
 mod jwt;
 pub mod refresh;
 mod transactions;
@@ -25,6 +26,7 @@ pub struct Auth {
     pub jwt: JwtAuth,
     pub google: google::Google,
     pub transactions: transactions::Transactions,
+    pub guests: guest::GuestLimiter,
     pub clock: Clock,
 }
 
@@ -38,6 +40,8 @@ impl Auth {
             jwt: JwtAuth::new(config.signing_secret.as_bytes(), clock.clone()),
             google: google::Google::new(&config)?,
             transactions: transactions::Transactions::new(4096),
+            guests: guest::GuestLimiter::new(clock.clone()),
+
             config,
             clock,
         })

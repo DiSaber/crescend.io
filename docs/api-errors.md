@@ -10,6 +10,16 @@ Clients should branch on the HTTP status and stable `code`, and use `error` for 
 
 `backend/src/api_error.rs` owns `ErrorResponse` (the shared OpenAPI schema) and `ApiError` (status plus body serialization). Domain error enums retain their own variants and map to `ApiError` in their HTTP response implementations. Choose static, safe messages; log internal failure details separately. Endpoint-specific cookies, cache headers, and bearer challenges remain at their existing boundaries.
 
+## Guest and nickname errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `invalid_nickname` | Join or create nickname is empty after trimming, longer than 24 characters, or contains control/invisible formatting characters. |
+| 403 | `google_account_required` | A guest account tried to create a lobby. Sign in with Google to host. |
+| 429 | `too_many_guests` | `POST /api/auth/guest` would create more than 20 guest accounts from one address in an hour. `Retry-After` gives the seconds to wait. Restoring an existing guest is never limited. |
+
+See [guest join](guest-join.md).
+
 ## Queue errors
 
 Reordering returns `409 stale_queue_revision` for any mismatched lobby revision,

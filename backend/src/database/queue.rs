@@ -49,6 +49,7 @@ pub(crate) async fn snapshot(
         EXISTS(SELECT 1 FROM queue_votes v WHERE v.entry_id = e.id AND v.user_id = ?) AS has_voted
         FROM queue_order o JOIN queue_entries e ON e.id = o.entry_id WHERE o.lobby_id = ? ORDER BY o.position")
         .bind(bound.owner).bind(user).bind(&bound.lobby_id).fetch_all(&mut **tx).await?;
+    let names = super::nicknames::lobby_names(&mut **tx, &bound.lobby_id).await?;
     let mut entries = Vec::with_capacity(rows.len());
     for (position, row) in rows.into_iter().enumerate() {
         if row.try_get::<i64, _>("position")?
@@ -69,6 +70,11 @@ pub(crate) async fn snapshot(
                 embed_url: row.try_get("embed_url")?,
             },
             submitted_by_user_id: row.try_get::<i64, _>("submitted_by_user_id")?.to_string(),
+            submitted_by_nickname: super::nicknames::name_of(
+                &names,
+                row.try_get("submitted_by_user_id")?,
+            ),
+
             submitted_at: row.try_get("submitted_at")?,
             active_vote_count: row.try_get("active_vote_count")?,
             has_voted: user != bound.owner && row.try_get("has_voted")?,

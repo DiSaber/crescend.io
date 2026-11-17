@@ -19,6 +19,7 @@ mod g2_modes;
 mod g3_tune;
 mod g4_prompts;
 mod g5_saved;
+mod g6_nicknames;
 
 const NOW: i64 = 1_800_000_000;
 

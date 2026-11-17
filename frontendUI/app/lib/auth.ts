@@ -49,6 +49,27 @@ export async function currentUserId(): Promise<string | undefined> {
     return typeof payload.sub === "string" && /^\d+$/.test(payload.sub) ? payload.sub : undefined;
   } catch { return undefined; }
 }
+/** Sign in with just this browser: no Google account. Joining only; hosts need Google. */
+export async function guestSignIn() {
+  try { localStorage.removeItem(STOP_KEY); } catch { /* This tab's coordinator restarts below. */ }
+  return auth().guestSignIn();
+}
+export type Account = { user_id: string; guest: boolean; last_nickname: string | null };
+/** The signed-in account, or undefined when signed out. */
+export async function account(): Promise<Account | undefined> {
+  if (!(await getToken())) return undefined;
+  const response = await apiFetch("/api/me");
+  return response.ok ? response.json() : undefined;
+}
+/** The nickname this browser's guest account used last, without signing in. */
+export async function lastGuestNickname(): Promise<string | undefined> {
+  try {
+    const response = await fetch("/api/auth/guest", { credentials: "same-origin", cache: "no-store" });
+    if (!response.ok) return undefined;
+    const body = await response.json();
+    return typeof body.last_nickname === "string" ? body.last_nickname : undefined;
+  } catch { return undefined; }
+}
 export function login(returnTo: string) {
   try { localStorage.removeItem(STOP_KEY); } catch { /* New page starts a new coordinator. */ }
   window.location.assign("/api/auth/google/start?" + new URLSearchParams({ return_to: returnTo }));

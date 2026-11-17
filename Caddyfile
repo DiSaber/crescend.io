@@ -4,6 +4,18 @@
 # SITE_ADDRESS is set by docker-compose:
 #   local dev      -> :3000                (plain HTTP, Origin http://localhost:3000)
 #   hosted demo    -> crescend.example.com (Caddy provisions HTTPS automatically)
+
+# Client address for the guest sign-up limit (docs/guest-join.md). Only a peer on a
+# private address (the Cloudflare tunnel's cloudflared, reaching the loopback-published
+# port through Docker) may supply CF-Connecting-IP / X-Forwarded-For; anyone else is
+# identified by their own TCP address, so the header cannot be spoofed from outside.
+{
+	servers {
+		trusted_proxies static private_ranges
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+}
+
 {$SITE_ADDRESS}
 
 encode gzip
@@ -14,6 +26,8 @@ encode gzip
 handle @backend {
 	reverse_proxy backend:3000 {
 		flush_interval -1
+		# Always overwritten, so a client-sent copy never reaches the backend.
+		header_up X-Crescend-Client-IP {client_ip}
 	}
 }
 

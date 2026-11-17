@@ -58,11 +58,12 @@ export function roundLabel(game: GameView) {
   return `${game.mode.name} · Round ${game.round}${game.total_rounds ? ` of ${game.total_rounds}` : ""}`;
 }
 
-/** "You", "Host" or "Guest #7", matching the lobby's member chips. */
-export function playerName(userId: string | null | undefined, ownerId: string | undefined, me: string | undefined) {
-  if (!userId) return "someone";
-  if (userId === me) return "You";
-  return userId === ownerId ? "Host" : `Guest #${userId}`;
+export type NameFn = (userId: string | null | undefined, nickname: string | null | undefined) => string;
+
+/** A player's nickname in this lobby, marked "(you)" for the caller. Render as text only. */
+export function playerName(userId: string | null | undefined, nickname: string | null | undefined, me: string | undefined) {
+  if (!userId || !nickname) return "someone";
+  return userId === me ? `${nickname} (you)` : nickname;
 }
 
 export function Scoreboard({ game, ownerId, me, large = false }: {
@@ -81,7 +82,7 @@ export function Scoreboard({ game, ownerId, me, large = false }: {
             return (
               <li key={row.user_id} className={`flex items-center gap-3 rounded-lg px-3 ${large ? "py-3 text-2xl" : "py-2 text-sm"} ${row.user_id === me ? "bg-[#5C172E]" : "bg-zinc-800"} ${row.active ? "" : "opacity-50"}`}>
                 <span className="w-6 text-zinc-400 tabular-nums">{rank}</span>
-                <span className="flex-1 min-w-0 truncate">{playerName(row.user_id, ownerId, me)}{!row.active && " (left)"}</span>
+                <span className="flex-1 min-w-0 truncate">{playerName(row.user_id, row.nickname, me)}{row.user_id === ownerId && <span className="text-zinc-400"> · host</span>}{!row.active && " (left)"}</span>
                 <span className="font-mono font-bold tabular-nums">{row.points}</span>
               </li>
             );
