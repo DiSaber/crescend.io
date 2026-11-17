@@ -38,6 +38,14 @@ pub enum GameError {
     SongChanged,
     SubmissionLimit,
     DuplicateSong,
+    /// Pick modes: someone already picked this video this round.
+    SongAlreadyPicked,
+    /// The mode needs more players in the lobby; the message says how many.
+    NotEnoughPlayers(&'static str),
+    /// A mode name is empty, too long or carries hidden characters.
+    InvalidModeName(&'static str),
+    /// Pair ballots: the other song in the caller's own pair.
+    OwnPair,
     HostCannotGuess,
     OwnSong,
     GuessLimit,
@@ -99,15 +107,40 @@ pub(crate) fn resolve(
     Ok((mode_id, customize(base, &request.settings)?))
 }
 
+/// Longest mode name, in Unicode scalar values after trimming: what JavaScript's
+/// `Array.from(name).length` counts, so an emoji is one character on both sides.
+pub const MAX_MODE_NAME_CHARS: usize = 40;
+
+/// Invisible characters that could disguise a name: bidirectional marks,
+/// embeddings, overrides and isolates, zero-width spaces and joiners, and the BOM.
+fn hidden_character(c: char) -> bool {
+    matches!(c,
+        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}')
+}
+
+/// A trimmed mode name, or why it is refused.
+pub(crate) fn mode_name(name: &str) -> Result<&str, GameError> {
+    let name = name.trim();
+    if name.chars().any(hidden_character) {
+        return Err(GameError::InvalidModeName(
+            "Mode names can't contain invisible or direction-changing characters.",
+        ));
+    }
+    if !(1..=MAX_MODE_NAME_CHARS).contains(&name.chars().count()) {
+        return Err(GameError::InvalidModeName(
+            "Mode names are 1 to 40 characters.",
+        ));
+    }
+    Ok(name)
+}
+
 /// A custom rule set on its default settings; the name is 1-40 characters trimmed.
 pub(crate) fn custom_definition(
     name: &str,
     rules: rules::Rules,
 ) -> Result<modes::Definition, GameError> {
-    let name = name.trim();
-    if !(1..=40).contains(&name.chars().count()) {
-        return Err(GameError::InvalidRequest);
-    }
+    let name = mode_name(name)?;
     Ok(modes::Definition {
         name: name.to_owned(),
         rules,

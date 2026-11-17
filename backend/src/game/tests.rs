@@ -22,6 +22,7 @@ mod g5_saved;
 mod g6_lifecycle;
 mod g6_load;
 mod g6_nicknames;
+mod g7_qa;
 mod ghosts;
 
 const NOW: i64 = 1_800_000_000;
@@ -166,7 +167,7 @@ impl Fixture {
 
     async fn view(&self, user: &AuthenticatedUser, membership: &str) -> GameView {
         self.database
-            .game_view(user, membership, || self.now())
+            .game_view(user, membership, false, || self.now())
             .await
             .unwrap()
             .game

@@ -38,7 +38,11 @@ the same shape as a listed mode:
  "prompts": [{"text": "A rainy day song"}, {"text": "A sunny one"}]}
 ```
 
-Validation matches a custom start: name 1–40 characters (`400 invalid_request`),
+Validation matches a custom start: name 1–40 characters after trimming, counted as
+Unicode characters (`Array.from(name).length`), with no bidirectional controls or
+zero-width characters (`400 invalid_mode_name`, with a message to show). A name the
+caller already uses, or a preset's name, is saved with " 2" (" 3", ...) appended,
+ignoring case and shortened to fit, so read the returned `name`. Also
 `400 invalid_game_rules`, `400 invalid_game_settings`. `prompts` are optional
 default prompts and only `text` modes may keep them (images belong to one lobby),
 else `400 invalid_game_prompts`. An account keeps at most 50 modes
@@ -69,6 +73,7 @@ one of `mode_id` or `custom`, plus optional `settings` overrides:
 ```
 
 `settings` keys must be in the mode's served schema with the right type and range,
+each at most once (a repeated key is `400 invalid_request`),
 otherwise `400 invalid_game_settings` with `setting` (the first rejected key) and
 `detail` (a field-level reason) added to the error body. A `custom` mode starts from Party's defaults;
 its name is 1–40 characters after trimming. Rule combinations the engine cannot run
@@ -76,17 +81,23 @@ return `400 invalid_game_rules` (`ballot: all` needs `winner: most_votes`;
 `ballot: pairs` needs `winner: pair_winners`). The snapshot's `mode_id` is the
 preset key or `custom`, and `mode` holds the resolved name, rules and settings.
 Guests get `403 host_required`; an unknown preset returns
-`404 game_mode_unavailable`; a running game returns `409 game_running`. Starting
+`404 game_mode_unavailable`; a running game returns `409 game_running`. A `pairs`
+ballot (Duel) needs at least 3 members, else `409 not_enough_players`. Starting
 replaces an ended game and its scoreboard. The response is
 `{"changed":true,"game":<snapshot>}`.
 
 Hosts end with bodyless `DELETE .../game`. A running game becomes `status: ended`
-(phase `ended`, songs stop, scoreboard kept). Deleting an ended game dismisses it
+(phase `ended`, songs stop, scoreboard kept). Ending a Name That Tune game during
+`guess` closes that round first, so `last_result` reveals the song with
+`note: "ended_early"`. Deleting an ended game dismisses it
 (`game: null`, the plain jukebox). With no game it is a `changed: false` no-op.
 
 ## Snapshot
 
-Any active member reads `GET .../game` (bodyless):
+Any active member reads `GET .../game` (bodyless). The TV board adds `?view=board`
+to get the snapshot a guest who owns nothing would get, even on the host's account:
+`now_playing` hidden while guessing, no `my_submissions`, no `mine` on the ballot.
+Any other query string is `400 invalid_request`.
 
 ```json
 {
@@ -100,7 +111,7 @@ Any active member reads `GET .../game` (bodyless):
     "my_submissions": [{"id": "...", "song": {"video_id": "...", "title": "...", "author_name": "...", "thumbnail_url": "...", "embed_url": "..."}}],
     "submission_count": 3,
     "ballot": null,
-    "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat", "votes": 2, "winner": true, "points": 20}]},
+    "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat", "votes": 2, "winner": true, "points": 20, "group": 0, "outcome": "won"}]},
     "now_playing": {"play_seq": 1, "round": 1, "hidden": false, "song": {...}, "submitted_by_user_id": "7", "submitted_by_nickname": "Kat",
       "start_seconds": 0, "started_at": "...", "ends_at": null},
     "guess": null, "up_next_count": 0,
@@ -121,7 +132,10 @@ round; others are counted in `submission_count` without identities. `ballot` exi
 only during `vote` and lists songs anonymously in `groups` with `mine` and
 `votable`, plus `votes_allowed` (how many votes this caller can cast on this ballot)
 and the caller's `my_votes`; it never contains counts or submitters. Counts, submitters and points appear in `last_result` only after the
-vote closes. `scoreboard` lists active members (including zero scores) and departed
+vote closes. Each result entry's `points` is what that song earned (a player with two
+songs gets two amounts), `winner` means the song plays, `group` is its pair (0 for a
+single ballot) and `outcome` is `won`, `lost`, `tie` (its pair ended level) or `bye`.
+Entries are ordered by `group`, the playing song first. `scoreboard` lists active members (including zero scores) and departed
 accounts that scored (`active: false`), highest first, ties by account ID.
 
 ## Phases (Party, Speed Round, Duel)
@@ -131,21 +145,27 @@ on every change.
 
 - **collect**: each member, host included, submits up to `songs_per_player` songs.
   It closes at `phase_ends_at` or as soon as every active member has submitted all
-  their songs. Zero songs skip the round; one song wins without a vote.
+  their songs. Zero songs skip the round; one song wins without a vote. A video
+  someone already picked this round returns `409 song_already_picked`.
 - **vote**: one ballot (`ballot.groups[0]`). Each member casts up to
   `votes_per_player` votes, one per song, never for their own unless `self_vote`.
   It closes at `phase_ends_at` or once every member has cast every vote they can.
   The most votes wins; ties go to the earliest submission. `VotesToPicker` gives the
   picker 10 points per vote received.
-  In **Duel** (`pairs`) songs pair up in submission order and an odd song out gets a
-  bye (`votable: false`). Each member casts one vote per pair, never in the pair
-  holding their own song unless `self_vote`. Every pair winner plays, in pair order,
-  byes included; `winner_bonus` gives 50 points per contested pair won.
+  In **Duel** (`pairs`) songs are interleaved by player (everyone's first song, then
+  everyone's second) and each pairs with the next song from someone else; a player
+  meets their own song only when nothing else is left. An odd song out gets a bye
+  (`votable: false`). Each member casts one vote per pair, never in the pair holding
+  their own song unless `self_vote` (`409 own_pair` for the other song there). Every
+  pair's playing song plays, in pair order, byes included; `winner_bonus` gives 50
+  points for a pair won with strictly more votes. A tied pair (0-0 included) plays
+  its earliest song and scores nothing (`outcome: tie`).
 - **play**: the round's winner joins the game's play list. `now_playing` is the
   head of that list; the host's player plays it from `start_seconds`. With
   `play_seconds: 0` (Party) `ends_at` is null and the host reports the end;
   otherwise the server ends it at `ends_at`. With `overlap_next_round` the next
-  round's `collect` opens while the winner plays; a round whose winner would have to
+  round's `collect` opens while the winner plays (`now_playing.round` says which
+  round's song is playing, which can be earlier than `round`); a round whose winner would have to
   wait behind an earlier round's song stays in `play` until that song ends. Without
   overlap every round waits in `play` for its songs. After the last round the game
   ends once the play list is empty.
@@ -159,7 +179,7 @@ on every change.
   own proposals for the whole game; `submission_count` counts all of them. A video
   already proposed in this game returns `409 song_already_proposed`. It closes at the
   timer or when everyone has proposed all their songs; with no proposals the game
-  ends. `total_rounds` stays null until it closes, then becomes the number of rounds
+  ends with `last_result.note: "no_proposals"` and no entries. `total_rounds` stays null until it closes, then becomes the number of rounds
   that will play (all proposals, or `rounds` if smaller).
 - **guess**: one proposal plays as a clip from `start_seconds` for `play_seconds`
   (`phase_ends_at`). For everyone but the host, `now_playing` is
@@ -167,11 +187,15 @@ on every change.
   player gets the video and must show it per [the policy decision](game-modes.md#hidden-title-what-youtubes-policies-allow-checked-2026-11-05).
   `guess` in the snapshot is the caller's standing: `eligible` (false for the host
   and the proposer), `own_song`, `correct`, `points`, `wrong_guesses`,
-  `guesses_left` and the public `correct_count`. It closes at the timer or once every
-  eligible player is right.
+  `guesses_left` (wrong guesses still allowed) and the public `correct_count`. It
+  closes at the timer or once every eligible player is right. When nobody is eligible
+  (only the host and the proposer remain) the round skips `guess`: no clip plays and
+  `reveal` lasts 3 seconds (or `reveal_seconds` if shorter) with
+  `last_result.note: "nobody_to_guess"`.
 - **reveal**: for `reveal_seconds`; `last_result` has `answer` (the title guesses were
-  matched against), the song with its proposer and the proposer's points, and
-  `guesses` (correct guessers fastest first, with `rank` and `points`). The clip keeps
+  matched against), the song with its proposer and the proposer's points,
+  `guesses` (correct guessers fastest first, with `rank` and `points`) and `note`
+  (null, or why the round was skipped or cut short). The clip keeps
   playing and is no longer hidden. Then the next round's `guess`, or `ended`.
 
 The host can `advance` either phase; `play_seq` reports a clip that ended early
@@ -195,17 +219,20 @@ Response: `{"changed":true,"submission_id":"...","game":<snapshot>}`.
 Vote with `POST .../game/votes` and `{"submission_id":"..."}`. Repeating a vote is a
 `changed: false` no-op. A song not on the current ballot returns
 `404 game_submission_unavailable`; own songs `409 self_vote_forbidden`; extra votes
-`409 vote_limit_reached`; outside `vote` `409 game_phase_closed`.
+`409 vote_limit_reached`; the other song in your own pair `409 own_pair`; outside
+`vote` `409 game_phase_closed`.
 
 Guess with `POST .../game/guesses` and `{"text":"bohemian rapsody"}` (1–100
 characters after trimming). The response is
 `{"changed":true,"correct":true,"points":108,"game":<snapshot>}`. Matching forgives
-case, accents, punctuation, small typos and extra words such as the artist (rules in
-[the plan](game-modes.md#design-decisions-backend)). Points: 50, plus up to 50 for
+case, accents, punctuation, small typos and extra words such as the artist, and
+bracketed parts and "ft." tails are optional on both the answer and the guess (rules
+in [the plan](game-modes.md#design-decisions-backend)). Points: 50, plus up to 50 for
 time left, plus 25 for the first correct guess. After a correct guess, more guesses
 return `changed: false` with the same points. The host gets `403 host_cannot_guess`;
-the proposer `409 own_song`; the eleventh wrong guess in a round
-`409 guess_limit_reached`; outside `guess` `409 game_phase_closed`.
+the proposer `409 own_song`; a wrong guess after 10 wrong ones in a round
+`409 guess_limit_reached` (not counted; a right answer is still accepted); outside
+`guess` `409 game_phase_closed`.
 
 ## Host progression
 
@@ -273,7 +300,8 @@ picks up ticker commits from other processes.
 
 While `game.status` is `running`, the host player plays `now_playing` and leaves
 the jukebox alone: the queue keeps its current entry and order and stays writable,
-so guests can keep adding songs for later. When the game ends (or is dismissed)
-the player resumes the queue where it was. The backend does not lock the queue.
+so guests can keep adding songs for later. The host page keeps the jukebox paused
+through the Game over card and resumes the queue's current song at its saved
+position when the host dismisses the game ("Back to the jukebox"). The backend does not lock the queue.
 
 Closing the lobby deletes its game; expiry deletes it with the lobby.

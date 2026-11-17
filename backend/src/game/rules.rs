@@ -31,7 +31,8 @@ pub enum CollectRule {
 pub enum BallotRule {
     /// One ballot with every submission of the round.
     All,
-    /// Head-to-head pairs in submission order; an odd song out gets a bye.
+    /// Head-to-head pairs, interleaved by player so nobody faces their own song
+    /// (unless nothing else is left); an odd song out gets a bye.
     Pairs,
     /// No voting (Name That Tune).
     None,
@@ -43,7 +44,7 @@ pub enum BallotRule {
 pub enum WinnerRule {
     /// Most votes on the single ballot; ties go to the earliest submission.
     MostVotes,
-    /// The winner of every pair (same tie rule); all of them play.
+    /// The winner of every pair (a tie plays the earliest song); all of them play.
     PairWinners,
     /// No vote to decide (Name That Tune).
     None,
@@ -152,14 +153,15 @@ pub trait Winner {
     fn winners(&self, groups: &[Vec<Entry>], votes: &HashMap<String, i64>) -> Vec<Entry>;
 }
 
-/// Points awarded when a round's vote closes, per account, and for title guesses.
+/// Points awarded when a round's vote closes, per submission, and for title guesses.
 pub trait Scoring {
+    /// Points each submission earns its submitter, keyed by submission ID.
     fn round_points(
         &self,
         _groups: &[Vec<Entry>],
         _winners: &[Entry],
         _votes: &HashMap<String, i64>,
-    ) -> HashMap<i64, i64> {
+    ) -> HashMap<String, i64> {
         HashMap::new()
     }
     /// Points for a correct guess: `rank` is 1 for the first correct guesser and
@@ -175,7 +177,8 @@ pub trait Scoring {
 
 /// Points for each vote a song receives under `VotesToPicker`.
 pub const POINTS_PER_VOTE: i64 = 10;
-/// Points for winning a contested group under `WinnerBonus`. Byes earn nothing.
+/// Points for winning a contested group outright under `WinnerBonus`. Byes and
+/// ties (including 0-0) earn nothing.
 pub const WIN_BONUS: i64 = 50;
 /// `GuessSpeed`: every correct guess earns the base, plus up to the speed points
 /// in proportion to the time left; the first correct guesser adds a bonus.
@@ -216,8 +219,26 @@ impl Ballot for AllBallot {
 
 struct PairsBallot;
 impl Ballot for PairsBallot {
+    /// Interleaves songs by player (in order of each player's first song) and pairs
+    /// each song with the next one from someone else. A player only faces their own
+    /// song when nothing else is left; an odd song out gets a bye at the end.
     fn groups(&self, entries: &[Entry]) -> Vec<Vec<Entry>> {
-        entries.chunks(2).map(<[Entry]>::to_vec).collect()
+        let mut left = interleave(entries);
+        let mut groups = Vec::new();
+        while !left.is_empty() {
+            let first = left.remove(0);
+            if left.is_empty() {
+                groups.push(vec![first]);
+                break;
+            }
+            let partner = left
+                .iter()
+                .position(|e| e.user_id != first.user_id)
+                .unwrap_or(0);
+            let second = left.remove(partner);
+            groups.push(vec![first, second]);
+        }
+        groups
     }
     /// Without self votes a player sits out the pair their own song is in.
     fn eligible(&self, group: &[Entry], _entry: &Entry, user: i64, self_vote: bool) -> bool {
@@ -267,6 +288,37 @@ impl Winner for PairWinners {
     }
 }
 
+/// Round-robin over players in order of their first entry: everyone's first song,
+/// then everyone's second, and so on.
+pub fn interleave(entries: &[Entry]) -> Vec<Entry> {
+    let mut players: Vec<(i64, Vec<Entry>)> = Vec::new();
+    for entry in entries {
+        match players.iter_mut().find(|(user, _)| *user == entry.user_id) {
+            Some((_, songs)) => songs.push(entry.clone()),
+            None => players.push((entry.user_id, vec![entry.clone()])),
+        }
+    }
+    let longest = players.iter().map(|(_, s)| s.len()).max().unwrap_or(0);
+    (0..longest)
+        .flat_map(|turn| {
+            players
+                .iter()
+                .filter_map(move |(_, s)| s.get(turn).cloned())
+        })
+        .collect()
+}
+
+/// Whether `group` has one song with strictly more votes than every other: a
+/// contested group decided by the vote rather than by the tie rule.
+pub fn outright(group: &[Entry], votes: &HashMap<String, i64>) -> bool {
+    let mut counts: Vec<i64> = group
+        .iter()
+        .map(|e| votes.get(&e.id).copied().unwrap_or(0))
+        .collect();
+    counts.sort_unstable_by(|a, b| b.cmp(a));
+    group.len() > 1 && counts[0] > counts[1]
+}
+
 /// Highest count wins; equal counts go to the lowest submission sequence.
 pub fn most_votes(group: &[Entry], votes: &HashMap<String, i64>) -> Option<Entry> {
     group
@@ -288,12 +340,12 @@ impl Scoring for VotesToPicker {
         groups: &[Vec<Entry>],
         _winners: &[Entry],
         votes: &HashMap<String, i64>,
-    ) -> HashMap<i64, i64> {
+    ) -> HashMap<String, i64> {
         let mut points = HashMap::new();
         for entry in groups.iter().flatten() {
             let count = votes.get(&entry.id).copied().unwrap_or(0);
             if count > 0 {
-                *points.entry(entry.user_id).or_insert(0) += count * POINTS_PER_VOTE;
+                points.insert(entry.id.clone(), count * POINTS_PER_VOTE);
             }
         }
         points
@@ -306,12 +358,12 @@ impl Scoring for WinnerBonus {
         &self,
         groups: &[Vec<Entry>],
         winners: &[Entry],
-        _votes: &HashMap<String, i64>,
-    ) -> HashMap<i64, i64> {
+        votes: &HashMap<String, i64>,
+    ) -> HashMap<String, i64> {
         let mut points = HashMap::new();
-        for group in groups.iter().filter(|g| g.len() > 1) {
+        for group in groups.iter().filter(|g| outright(g, votes)) {
             if let Some(winner) = winners.iter().find(|w| group.contains(w)) {
-                *points.entry(winner.user_id).or_insert(0) += WIN_BONUS;
+                points.insert(winner.id.clone(), WIN_BONUS);
             }
         }
         points
@@ -495,9 +547,86 @@ mod tests {
             .round_points(&groups, &winners, &votes);
         assert_eq!(
             points,
-            HashMap::from([(2, WIN_BONUS)]),
+            HashMap::from([("b".to_string(), WIN_BONUS)]),
             "the bye scores nothing"
         );
+    }
+
+    #[test]
+    fn a_tied_or_empty_pair_plays_its_earliest_song_and_scores_nothing() {
+        let groups = vec![
+            vec![entry("a", 1, 1), entry("b", 2, 2)],
+            vec![entry("c", 3, 3), entry("d", 4, 4)],
+            vec![entry("e", 5, 5), entry("f", 6, 6)],
+        ];
+        // Pair 1 ties 1-1, pair 2 gets no votes, pair 3 is won outright.
+        let votes = HashMap::from([
+            ("a".to_string(), 1),
+            ("b".to_string(), 1),
+            ("f".to_string(), 2),
+        ]);
+        let winners = WinnerRule::PairWinners.imp().winners(&groups, &votes);
+        assert_eq!(
+            winners,
+            vec![entry("a", 1, 1), entry("c", 3, 3), entry("f", 6, 6)]
+        );
+        assert!(!outright(&groups[0], &votes) && !outright(&groups[1], &votes));
+        assert!(outright(&groups[2], &votes));
+        assert!(
+            !outright(&[entry("z", 9, 9)], &votes),
+            "a bye is not contested"
+        );
+        let points = ScoringRule::WinnerBonus
+            .imp()
+            .round_points(&groups, &winners, &votes);
+        assert_eq!(points, HashMap::from([("f".to_string(), WIN_BONUS)]));
+    }
+
+    #[test]
+    fn pairs_never_match_a_player_against_themselves_when_avoidable() {
+        let pairs = BallotRule::Pairs.imp();
+        // Two songs each, submitted player by player: A1 A2 B1 B2 C1 C2.
+        let entries = vec![
+            entry("a1", 1, 1),
+            entry("a2", 1, 2),
+            entry("b1", 2, 3),
+            entry("b2", 2, 4),
+            entry("c1", 3, 5),
+            entry("c2", 3, 6),
+        ];
+        let groups = pairs.groups(&entries);
+        assert_eq!(groups.len(), 3);
+        for group in &groups {
+            assert_ne!(group[0].user_id, group[1].user_id, "{group:?}");
+        }
+        // Two players with three songs each still never meet themselves.
+        let two: Vec<_> = [(1, 1), (1, 2), (1, 3), (2, 4), (2, 5), (2, 6)]
+            .iter()
+            .map(|(u, s)| entry(&format!("s{s}"), *u, *s))
+            .collect();
+        for group in pairs.groups(&two) {
+            assert_ne!(group[0].user_id, group[1].user_id);
+        }
+        // Last resort: only one player's songs are left.
+        let lonely = vec![entry("x", 1, 1), entry("y", 1, 2), entry("z", 2, 3)];
+        let groups = pairs.groups(&lonely);
+        assert_eq!(
+            groups[0].iter().map(|e| e.user_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            groups[1],
+            vec![entry("y", 1, 2)],
+            "odd song out gets the bye"
+        );
+        let mut all_one = vec![entry("p", 7, 1), entry("q", 7, 2)];
+        assert_eq!(
+            pairs.groups(&all_one).len(),
+            1,
+            "self-pair only as a last resort"
+        );
+        all_one.clear();
+        assert!(pairs.groups(&all_one).is_empty());
     }
 
     #[test]
@@ -507,7 +636,14 @@ mod tests {
         let points = ScoringRule::VotesToPicker
             .imp()
             .round_points(&groups, &[], &votes);
-        assert_eq!(points, HashMap::from([(1, 3 * POINTS_PER_VOTE)]));
+        assert_eq!(
+            points,
+            HashMap::from([
+                ("a".to_string(), 2 * POINTS_PER_VOTE),
+                ("c".to_string(), POINTS_PER_VOTE)
+            ]),
+            "points per song, so a player's two songs show separately"
+        );
     }
 
     #[test]

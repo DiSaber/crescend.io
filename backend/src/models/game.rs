@@ -26,10 +26,12 @@ pub struct GameModeView {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveModeRequest {
-    /// 1-40 characters after trimming.
+    /// 1-40 characters after trimming, without invisible or direction-changing
+    /// characters. A name the caller already uses gets " 2" (" 3", ...) appended.
     pub name: String,
     pub rules: Rules,
-    #[serde(default)]
+    /// Each key may appear once; a duplicate key is rejected with 400.
+    #[serde(default, deserialize_with = "unique_keys")]
     #[schema(value_type = Object)]
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// Optional default prompts for `text` prompt modes (up to 50).
@@ -70,7 +72,8 @@ pub struct GamePrompt {
 pub struct StartGameRequest {
     pub mode_id: Option<String>,
     pub custom: Option<CustomMode>,
-    #[serde(default)]
+    /// Each key may appear once; a duplicate key is rejected with 400.
+    #[serde(default, deserialize_with = "unique_keys")]
     #[schema(value_type = Object)]
     pub settings: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
@@ -203,8 +206,41 @@ pub struct ResultEntry {
     #[serde(default)]
     pub submitted_by_nickname: String,
     pub votes: i64,
+    /// The song plays: it won its ballot or pair (a tie plays the earliest song).
     pub winner: bool,
+    /// Points this song earned its submitter this round.
     pub points: i64,
+    /// Pair ballots: the 0-based pair this song was in (always 0 for one ballot).
+    #[serde(default)]
+    pub group: i64,
+    /// How the song's ballot or pair ended for it.
+    #[serde(default)]
+    pub outcome: ResultOutcome,
+}
+
+/// `won` and `lost` are decided by votes; `tie` means its pair ended level (0-0
+/// included), so the earliest song plays and nobody scores; `bye` played unopposed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultOutcome {
+    #[default]
+    Won,
+    Lost,
+    Tie,
+    Bye,
+}
+
+/// Why a Name That Tune result has no guessing, shown instead of the guesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultNote {
+    /// Only the host and the proposer remain, so nobody could guess: the round was
+    /// skipped with a short reveal.
+    NobodyToGuess,
+    /// Collect closed with no proposals, so the game ended without a round.
+    NoProposals,
+    /// The host ended the game while this song was being guessed.
+    EndedEarly,
 }
 
 /// Stored song snapshot used inside revealed results.
@@ -240,6 +276,9 @@ pub struct RoundResult {
     /// Name That Tune: correct guessers, fastest first.
     #[serde(default)]
     pub guesses: Vec<GuessResult>,
+    /// Name That Tune: set when the round was skipped, cut short or never played.
+    #[serde(default)]
+    pub note: Option<ResultNote>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -273,6 +312,8 @@ pub struct GuessView {
     pub correct: bool,
     pub points: i64,
     pub wrong_guesses: i64,
+    /// Wrong guesses the caller may still make (0 once they are out, correct or
+    /// not eligible). A correct guess is accepted even with none left.
     pub guesses_left: i64,
     /// Correct guessers so far, without identities until the reveal.
     pub correct_count: i64,
@@ -375,4 +416,35 @@ pub struct GameGuessResponse {
 pub struct GameAdvanceRequest {
     pub phase_seq: Option<i64>,
     pub play_seq: Option<i64>,
+}
+
+/// A JSON object whose keys each appear once. `serde_json::Map` silently keeps the
+/// last of duplicate keys, so `{"rounds": 3, "rounds": 50}` would start 50 rounds.
+fn unique_keys<'de, D>(
+    deserializer: D,
+) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Unique;
+    impl<'de> serde::de::Visitor<'de> for Unique {
+        type Value = serde_json::Map<String, serde_json::Value>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an object with unique keys")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut map = serde_json::Map::new();
+            while let Some((key, value)) = access.next_entry::<String, serde_json::Value>()? {
+                if map.contains_key(&key) {
+                    return Err(serde::de::Error::custom(format!("duplicate setting {key}")));
+                }
+                map.insert(key, value);
+            }
+            Ok(map)
+        }
+    }
+    deserializer.deserialize_map(Unique)
 }

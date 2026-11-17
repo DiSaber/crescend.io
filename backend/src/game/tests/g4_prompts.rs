@@ -158,7 +158,7 @@ async fn picture_this_uploads_strip_metadata_and_images_appear_only_in_their_rou
     let second_id = second["image_id"].as_str().unwrap().to_owned();
     let lobby_id = f
         .database
-        .game_view(&lobby.host, host, || f.now())
+        .game_view(&lobby.host, host, false, || f.now())
         .await
         .unwrap()
         .lobby_id;

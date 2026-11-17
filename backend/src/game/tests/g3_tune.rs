@@ -285,11 +285,20 @@ async fn guesses_are_limited_and_the_round_count_follows_settings_and_proposals(
         assert!(!guess(&f, g1, m1, "nope").await.unwrap().correct);
     }
     assert!(matches!(
-        guess(&f, g1, m1, "hello").await,
+        guess(&f, g1, m1, "nope again").await,
         Err(GameError::GuessLimit)
     ));
-    assert_eq!(f.view(g1, m1).await.guess.unwrap().guesses_left, 0);
-    skip(&f, &lobby).await;
+    let standing = f.view(g1, m1).await.guess.unwrap();
+    assert_eq!(standing.guesses_left, 0);
+    assert_eq!(
+        standing.wrong_guesses,
+        crate::game::answer::MAX_WRONG_GUESSES,
+        "a refused guess is not counted"
+    );
+    // The limit counts wrong guesses only: the right answer still counts.
+    assert!(guess(&f, g1, m1, "hello").await.unwrap().correct);
+    // The only guesser got it, so the round is already revealing.
+    assert_eq!(f.view(g1, m1).await.phase, Phase::Reveal);
     let game = skip(&f, &lobby).await;
     assert_eq!(game.round, 2);
     assert!(
