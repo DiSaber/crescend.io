@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { playbackEvents } from "../lib/playback-events";
-import type { QueueEntry } from "../lib/queue";
 
 type Player = { destroy: () => void; playVideo: () => void };
 type YouTubeApi = {
@@ -37,9 +36,13 @@ function loadApi() {
   return promise;
 }
 
-/** Remount per occurrence, including consecutive occurrences of the same video. */
-export default function YouTubePlayer({ entry, disabled, onEnded, onSkipError }: {
-  entry: QueueEntry; disabled: boolean; onEnded: () => void; onSkipError: () => void;
+/**
+ * A normal, visible player (never covered, shrunk below 200x200 or hidden; see
+ * docs/game-modes.md). Remount per occurrence, including consecutive occurrences of
+ * the same video: `occurrence` is a queue entry ID or a game play_seq.
+ */
+export default function YouTubePlayer({ videoId, occurrence, start = 0, disabled, onEnded, onSkipError }: {
+  videoId: string; occurrence: string; start?: number; disabled: boolean; onEnded: () => void; onSkipError: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const player = useRef<Player | undefined>(undefined);
@@ -57,8 +60,8 @@ export default function YouTubePlayer({ entry, disabled, onEnded, onSkipError }:
       // YouTube replaces its target node; keep React's container intact for cleanup.
       const target = document.createElement("div"); container.current.replaceChildren(target);
       instance = new api.Player(target, {
-        videoId: entry.video.video_id, width: "100%", height: "100%",
-        playerVars: { autoplay: 1, enablejsapi: 1, playsinline: 1, origin: window.location.origin },
+        videoId, width: "100%", height: "100%",
+        playerVars: { autoplay: 1, enablejsapi: 1, playsinline: 1, origin: window.location.origin, ...(start > 0 ? { start } : {}) },
         events: {
           onReady: () => {},
           onStateChange: events.state,
@@ -69,7 +72,7 @@ export default function YouTubePlayer({ entry, disabled, onEnded, onSkipError }:
       player.current = instance;
     }).catch(e => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; events.dispose(); player.current = undefined; instance?.destroy(); };
-  }, [entry.id, entry.video.video_id, retry]);
+  }, [occurrence, videoId, start, retry]);
   return (
     <div>
       <div className="relative w-full aspect-video min-h-[200px] rounded-lg overflow-hidden bg-black [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full" ref={container} />

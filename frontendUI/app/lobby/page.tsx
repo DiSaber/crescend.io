@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import Jukebox from "../components/jukebox.jsx";
 import SignInGate from "../components/SignInGate";
 import YouTubePlayer from "../components/YouTubePlayer";
-import SongSearch from "../components/SongSearch";
+import SongPicker from "../components/SongPicker";
+import GamePanel from "../components/game/GamePanel";
+import GameSetup from "../components/game/GameSetup";
+import HostGamePlayer from "../components/game/HostGamePlayer";
 import { youTubeVideoUrl } from "../lib/youtube";
 import { QueueSession } from "../lib/queue-state";
 import { type AdvanceReason, type QueueEntry, type QueueView } from "../lib/queue";
@@ -18,14 +21,11 @@ function Lobby() {
   const { membership, queue, userId, live, busy, ended, attempt } = state;
   const lobby = membership?.lobby;
   const [link, setLink] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
   useEffect(() => { session.start(); return () => session.stop(); }, [session]);
 
   async function leave() {
     if (await session.leave()) router.push("/");
-  }
-  async function addSong(e: FormEvent) {
-    e.preventDefault();
-    await submitLink(link);
   }
   async function submitLink(text: string) {
     const url = youTubeVideoUrl(text);
@@ -33,7 +33,6 @@ function Lobby() {
     await session.add(url);
     if (!session.getSnapshot().attempt && !session.getSnapshot().error) setLink("");
   }
-  const linkUrl = youTubeVideoUrl(link);
   const current = queue?.current ?? null;
   const upcoming = queue?.upcoming ?? [];
   const isHost = session.isHost();
@@ -46,6 +45,9 @@ function Lobby() {
     void session.advanceEntry(entry.id, reason, epoch).catch(() => {});
   };
   const disabled = !!busy || !!state.syncError;
+  const game = state.game?.game ?? null;
+  // While a game runs the host player plays the game's songs; the queue keeps its place.
+  const gameRunning = game?.status === "running";
 
   if (!membership) return (
     <div className="text-center">
@@ -136,6 +138,7 @@ function Lobby() {
           <p className="text-zinc-400 text-sm">Session code</p>
           <p className="text-5xl font-mono font-extrabold tracking-[0.2em] text-[#05EEFF]">{lobby.join_code}</p>
           <p className={`mt-2 text-xs ${live ? "text-green-400" : "text-zinc-500"}`}>{live ? "● live" : "○ connecting"}</p>
+          <a href="/lobby/tv/" target="_blank" rel="noopener" className="mt-1 inline-flex min-h-11 items-center text-sm text-zinc-300 underline hover:text-white">Board view for a TV ↗</a>
           {isHost && (
             <div className="mt-4 flex flex-col items-center gap-2">
               {/* White border is the quiet zone phone cameras need to read the code. */}
@@ -169,38 +172,40 @@ function Lobby() {
               onChange={(policy) => session.policy(policy).catch(() => {})}
             />
           )}
-          <button onClick={leave} disabled={!!busy} className="mt-4 text-sm text-zinc-400 hover:text-red-400 underline">
+          <button onClick={leave} disabled={!!busy} className="mt-4 min-h-11 text-sm text-zinc-400 hover:text-red-400 underline">
             Leave session (closes it for everyone if you&apos;re the host)
           </button>
         </div>
       </div>
 
-      <div className="w-full max-w-4xl flex flex-col gap-3">
-      <form onSubmit={addSong} className="flex flex-col sm:flex-row gap-3 w-full">
-        <input
-          value={link}
-          onChange={(e) => setLink(e.target.value)}
-          aria-label="Song name or YouTube link"
-          disabled={!!attempt || !!busy}
-          placeholder="Song name or YouTube link"
-          className="min-w-0 flex-1 p-3 rounded-lg bg-zinc-800 border border-zinc-700 placeholder-zinc-500 focus:outline-none focus:border-purple-500"
-        />
-        <button
-          type="submit"
-          disabled={disabled || !!attempt || !queue || !linkUrl}
-          className="min-h-11 px-6 rounded-lg bg-[#5C172E] hover:bg-[#FF0048] disabled:opacity-50 transition font-bold"
-        >
-          {adding ? "Adding…" : "Add music"}
-        </button>
-      </form>
-      {!linkUrl && <SongSearch
-        query={link}
-        addingUrl={adding ? attempt?.url : undefined}
-        disabled={disabled || !!attempt || !queue}
-        onAdd={url => { void submitLink(url); }}
-        onPasteLink={text => { setLink(text); void submitLink(text); }}
+      {game && <GamePanel
+        session={session}
+        state={state}
+        onNewGame={() => setSetupOpen(true)}
+        player={isHost && gameRunning ? <HostGamePlayer session={session} state={state} /> : undefined}
       />}
-      </div>
+      {isHost && (!gameRunning) && (setupOpen
+        ? <GameSetup session={session} state={state} onClose={() => setSetupOpen(false)} />
+        : !game && (
+          <button onClick={() => setSetupOpen(true)} className="w-full max-w-4xl min-h-14 rounded-xl border border-[#5C172E] bg-zinc-900 hover:border-[#FF0048] p-4 text-left">
+            <span className="block text-lg font-bold">Start a game</span>
+            <span className="block text-sm text-zinc-400">Party, Speed Round, Duel and more. The queue waits and resumes after.</span>
+          </button>
+        ))}
+
+      {gameRunning && <p className="w-full max-w-4xl text-sm text-zinc-400">
+        The jukebox is paused during the game{upcoming.length + (current ? 1 : 0) > 0 && ` with ${upcoming.length + (current ? 1 : 0)} song${upcoming.length + (current ? 1 : 0) === 1 ? "" : "s"} waiting`}. It picks up where it left off when the game ends.
+      </p>}
+      {!gameRunning && <div className="w-full max-w-4xl">
+        <SongPicker
+          value={link}
+          onChange={setLink}
+          onSubmit={url => { void submitLink(url); }}
+          addingUrl={adding ? attempt?.url : undefined}
+          disabled={disabled || !!attempt || !queue}
+          inputDisabled={!!attempt || !!busy}
+        />
+      </div>}
       {busy && <p role="status" className="text-zinc-400 text-sm">{busy}</p>}
       {error && <div role="alert" className="text-center">
         <p className="text-red-400">{error}</p>
@@ -212,7 +217,7 @@ function Lobby() {
         <button onClick={() => session.discardSubmission()} className="min-h-11 px-3 underline">Start a different submission</button>
       </div>}
 
-      {current ? (
+      {gameRunning ? null : current ? (
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4 mb-3">
             <div className="min-w-0">
@@ -237,7 +242,8 @@ function Lobby() {
           {isHost ? (
             <YouTubePlayer
               key={current.id}
-              entry={current}
+              videoId={current.video.video_id}
+              occurrence={current.id}
               disabled={disabled}
               onEnded={() => advanceFrom(current, "ended")}
               onSkipError={() => advanceFrom(current, "playback_error_skip")}
@@ -261,7 +267,7 @@ function Lobby() {
         </div>
       )}
 
-      {upcoming.length > 0 && (
+      {!gameRunning && upcoming.length > 0 && (
         <section className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <h2 className="font-semibold mb-3">Up next</h2>
           <ol className="space-y-2">
@@ -282,11 +288,11 @@ function Lobby() {
         </section>
       )}
 
-      <Jukebox
+      {!gameRunning && <Jukebox
         className="max-w-4xl"
         tiles={[...(current ? [current] : []), ...upcoming].map((entry) => entry.video)}
         spinning={!!current}
-      />
+      />}
     </div>
   );
 }

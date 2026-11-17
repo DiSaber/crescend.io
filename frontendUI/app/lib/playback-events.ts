@@ -9,7 +9,7 @@ export function playbackEvents(callbacks: { ended: () => void; error: (message: 
     },
     error() {
       if (disposed) return;
-      failed = true; callbacks.error("YouTube could not play this video here. The song is still queued.");
+      failed = true; callbacks.error("YouTube could not play this video here. Retry, or skip it.");
     },
     blocked() {
       if (disposed) return;
