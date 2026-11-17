@@ -22,6 +22,10 @@ from this list and only send keys it contains.
 | `party` | `all` / `most_votes` / `votes_to_picker` | 5 rounds, 45 s collect, 30 s vote, full songs |
 | `speed_round` | same as Party | 8 rounds, 20 s collect, 15 s vote, 60 s clips |
 | `duel` | `pairs` / `pair_winners` / `winner_bonus` | 3 rounds, 60 s clips; no `votes_per_player` |
+| `name_that_tune` | `none` / `none` / `guess_speed` (collect `propose`, challenge `guess_title`) | every proposal, 90 s to propose 2 songs, 30 s guesses from 0:30, 8 s reveal |
+
+Labels and limits depend on the rules: Name That Tune relabels `play_seconds` as
+"Guess time" (10–120 s), adds `reveal_seconds` and hides the voting and overlap keys.
 
 ## Starting and ending
 
@@ -36,7 +40,7 @@ one of `mode_id` or `custom`, plus optional `settings` overrides:
 
 `settings` keys must be in the mode's served schema with the right type and range,
 otherwise `400 invalid_game_settings`. A `custom` mode starts from Party's defaults;
-its name is 1�40 characters after trimming. Rule combinations the engine cannot run
+its name is 1–40 characters after trimming. Rule combinations the engine cannot run
 return `400 invalid_game_rules` (`ballot: all` needs `winner: most_votes`;
 `ballot: pairs` needs `winner: pair_winners`). The snapshot's `mode_id` is the
 preset key or `custom`, and `mode` holds the resolved name, rules and settings.
@@ -66,9 +70,9 @@ Any active member reads `GET .../game` (bodyless):
     "submission_count": 3,
     "ballot": null,
     "last_result": {"round": 1, "entries": [{"submission_id": "...", "song": {...}, "submitted_by_user_id": "7", "votes": 2, "winner": true, "points": 20}]},
-    "now_playing": {"play_seq": 1, "round": 1, "song": {...}, "submitted_by_user_id": "7",
+    "now_playing": {"play_seq": 1, "round": 1, "hidden": false, "song": {...}, "submitted_by_user_id": "7",
       "start_seconds": 0, "started_at": "...", "ends_at": null},
-    "up_next_count": 0,
+    "guess": null, "up_next_count": 0,
     "scoreboard": [{"user_id": "7", "points": 20, "active": true}]
   }
 }
@@ -113,6 +117,33 @@ on every change.
   overlap every round waits in `play` for its songs. After the last round the game
   ends once the play list is empty.
 
+## Phases (Name That Tune)
+
+`collect` (once) → `guess` → `reveal`, repeated per round, then `ended`.
+
+- **collect**: everyone, host included, secretly proposes up to `songs_per_player`
+  songs through the same submissions route. `my_submissions` lists only the caller's
+  own proposals for the whole game; `submission_count` counts all of them. A video
+  already proposed in this game returns `409 song_already_proposed`. It closes at the
+  timer or when everyone has proposed all their songs; with no proposals the game
+  ends. `total_rounds` stays null until it closes, then becomes the number of rounds
+  that will play (all proposals, or `rounds` if smaller).
+- **guess**: one proposal plays as a clip from `start_seconds` for `play_seconds`
+  (`phase_ends_at`). For everyone but the host, `now_playing` is
+  `{"hidden": true, "song": null, "submitted_by_user_id": null, ...}`; the host's
+  player gets the video and must show it per [the policy decision](game-modes.md#hidden-title-what-youtubes-policies-allow-checked-2026-11-05).
+  `guess` in the snapshot is the caller's standing: `eligible` (false for the host
+  and the proposer), `own_song`, `correct`, `points`, `wrong_guesses`,
+  `guesses_left` and the public `correct_count`. It closes at the timer or once every
+  eligible player is right.
+- **reveal**: for `reveal_seconds`; `last_result` has `answer` (the title guesses were
+  matched against), the song with its proposer and the proposer's points, and
+  `guesses` (correct guessers fastest first, with `rank` and `points`). The clip keeps
+  playing and is no longer hidden. Then the next round's `guess`, or `ended`.
+
+The host can `advance` either phase; `play_seq` reports a clip that ended early
+(guessing continues, `now_playing` becomes null).
+
 The ticker applies due transitions within about a second and publishes them.
 Every write also catches the game up first, so a request just after a deadline acts
 on the phase that is open now (a late song lands in the next round's collect).
@@ -132,6 +163,16 @@ Vote with `POST .../game/votes` and `{"submission_id":"..."}`. Repeating a vote 
 `changed: false` no-op. A song not on the current ballot returns
 `404 game_submission_unavailable`; own songs `409 self_vote_forbidden`; extra votes
 `409 vote_limit_reached`; outside `vote` `409 game_phase_closed`.
+
+Guess with `POST .../game/guesses` and `{"text":"bohemian rapsody"}` (1–100
+characters after trimming). The response is
+`{"changed":true,"correct":true,"points":108,"game":<snapshot>}`. Matching forgives
+case, accents, punctuation, small typos and extra words such as the artist (rules in
+[the plan](game-modes.md#design-decisions-backend)). Points: 50, plus up to 50 for
+time left, plus 25 for the first correct guess. After a correct guess, more guesses
+return `changed: false` with the same points. The host gets `403 host_cannot_guess`;
+the proposer `409 own_song`; the eleventh wrong guess in a round
+`409 guess_limit_reached`; outside `guess` `409 game_phase_closed`.
 
 ## Host progression
 

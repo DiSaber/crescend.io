@@ -17,6 +17,8 @@ pub enum PromptRule {
 pub enum CollectRule {
     /// One or more songs per round, visible to everyone once collect closes.
     Pick,
+    /// Songs proposed once, up front, and kept secret; each round plays one.
+    Propose,
 }
 
 /// How submissions are grouped for voting.
@@ -27,6 +29,8 @@ pub enum BallotRule {
     All,
     /// Head-to-head pairs in submission order; an odd song out gets a bye.
     Pairs,
+    /// No voting (Name That Tune).
+    None,
 }
 
 /// How a round's result is chosen.
@@ -37,6 +41,8 @@ pub enum WinnerRule {
     MostVotes,
     /// The winner of every pair (same tie rule); all of them play.
     PairWinners,
+    /// No vote to decide (Name That Tune).
+    None,
 }
 
 /// What players do while songs play.
@@ -44,6 +50,8 @@ pub enum WinnerRule {
 #[serde(rename_all = "snake_case")]
 pub enum ChallengeRule {
     Listen,
+    /// Race to type the hidden song's title while a clip plays.
+    GuessTitle,
 }
 
 /// Who earns points.
@@ -54,6 +62,8 @@ pub enum ScoringRule {
     VotesToPicker,
     /// A flat bonus for each contested group a player's song wins.
     WinnerBonus,
+    /// Faster correct guesses score more; the proposer scores per correct guesser.
+    GuessSpeed,
 }
 
 /// One rule choice per decision.
@@ -71,9 +81,33 @@ pub struct Rules {
 impl Rules {
     /// Rejects combinations the engine cannot run, naming the first conflict.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.collect == CollectRule::Propose {
+            if self.prompt != PromptRule::None {
+                return Err("collect propose cannot use prompts");
+            }
+            if (self.ballot, self.winner) != (BallotRule::None, WinnerRule::None) {
+                return Err("collect propose requires ballot none and winner none");
+            }
+            if self.challenge != ChallengeRule::GuessTitle {
+                return Err("collect propose requires challenge guess_title");
+            }
+            if self.scoring != ScoringRule::GuessSpeed {
+                return Err("challenge guess_title requires scoring guess_speed");
+            }
+            return Ok(());
+        }
+        if self.challenge != ChallengeRule::Listen {
+            return Err("challenge guess_title requires collect propose");
+        }
+        if self.scoring == ScoringRule::GuessSpeed {
+            return Err("scoring guess_speed requires challenge guess_title");
+        }
         match (self.ballot, self.winner) {
             (BallotRule::All, WinnerRule::MostVotes)
             | (BallotRule::Pairs, WinnerRule::PairWinners) => {}
+            (BallotRule::None, _) | (_, WinnerRule::None) => {
+                return Err("collect pick requires a ballot and a winner rule");
+            }
             (BallotRule::All, _) => return Err("ballot all requires winner most_votes"),
             (BallotRule::Pairs, _) => return Err("ballot pairs requires winner pair_winners"),
         }
@@ -114,20 +148,38 @@ pub trait Winner {
     fn winners(&self, groups: &[Vec<Entry>], votes: &HashMap<String, i64>) -> Vec<Entry>;
 }
 
-/// Points awarded when a round's vote closes, per account.
+/// Points awarded when a round's vote closes, per account, and for title guesses.
 pub trait Scoring {
     fn round_points(
         &self,
-        groups: &[Vec<Entry>],
-        winners: &[Entry],
-        votes: &HashMap<String, i64>,
-    ) -> HashMap<i64, i64>;
+        _groups: &[Vec<Entry>],
+        _winners: &[Entry],
+        _votes: &HashMap<String, i64>,
+    ) -> HashMap<i64, i64> {
+        HashMap::new()
+    }
+    /// Points for a correct guess: `rank` is 1 for the first correct guesser and
+    /// `remaining` of `window` seconds were left.
+    fn guess_points(&self, _rank: i64, _remaining: i64, _window: i64) -> i64 {
+        0
+    }
+    /// Points for the proposer when the round closes with `correct` correct guessers.
+    fn proposer_points(&self, _correct: i64) -> i64 {
+        0
+    }
 }
 
 /// Points for each vote a song receives under `VotesToPicker`.
 pub const POINTS_PER_VOTE: i64 = 10;
 /// Points for winning a contested group under `WinnerBonus`. Byes earn nothing.
 pub const WIN_BONUS: i64 = 50;
+/// `GuessSpeed`: every correct guess earns the base, plus up to the speed points
+/// in proportion to the time left; the first correct guesser adds a bonus.
+pub const GUESS_BASE: i64 = 50;
+pub const GUESS_SPEED: i64 = 50;
+pub const FIRST_GUESS_BONUS: i64 = 25;
+/// `GuessSpeed`: the proposer's points per correct guesser.
+pub const PROPOSER_PER_GUESS: i64 = 20;
 
 struct AllBallot;
 impl Ballot for AllBallot {
@@ -262,11 +314,57 @@ impl Scoring for WinnerBonus {
     }
 }
 
+struct GuessSpeed;
+impl Scoring for GuessSpeed {
+    fn guess_points(&self, rank: i64, remaining: i64, window: i64) -> i64 {
+        let window = window.max(1);
+        let remaining = remaining.clamp(0, window);
+        let speed = (GUESS_SPEED * remaining + window / 2) / window;
+        GUESS_BASE + speed + if rank == 1 { FIRST_GUESS_BONUS } else { 0 }
+    }
+    fn proposer_points(&self, correct: i64) -> i64 {
+        PROPOSER_PER_GUESS * correct
+    }
+}
+
+/// Rules with nothing to vote on group nothing and decide nothing.
+struct NoBallot;
+impl Ballot for NoBallot {
+    fn groups(&self, _entries: &[Entry]) -> Vec<Vec<Entry>> {
+        Vec::new()
+    }
+    fn needed(
+        &self,
+        _groups: &[Vec<Entry>],
+        _votable: &dyn Fn(&Entry) -> bool,
+        _per_player: i64,
+    ) -> i64 {
+        0
+    }
+    fn allows(
+        &self,
+        _groups: &[Vec<Entry>],
+        _mine: &[String],
+        _target: &str,
+        _per_player: i64,
+    ) -> bool {
+        false
+    }
+}
+
+struct NoWinner;
+impl Winner for NoWinner {
+    fn winners(&self, _groups: &[Vec<Entry>], _votes: &HashMap<String, i64>) -> Vec<Entry> {
+        Vec::new()
+    }
+}
+
 impl BallotRule {
     pub fn imp(self) -> &'static dyn Ballot {
         match self {
             Self::All => &AllBallot,
             Self::Pairs => &PairsBallot,
+            Self::None => &NoBallot,
         }
     }
 }
@@ -276,6 +374,7 @@ impl WinnerRule {
         match self {
             Self::MostVotes => &MostVotes,
             Self::PairWinners => &PairWinners,
+            Self::None => &NoWinner,
         }
     }
 }
@@ -285,6 +384,7 @@ impl ScoringRule {
         match self {
             Self::VotesToPicker => &VotesToPicker,
             Self::WinnerBonus => &WinnerBonus,
+            Self::GuessSpeed => &GuessSpeed,
         }
     }
 }
@@ -404,6 +504,78 @@ mod tests {
             .imp()
             .round_points(&groups, &[], &votes);
         assert_eq!(points, HashMap::from([(1, 3 * POINTS_PER_VOTE)]));
+    }
+
+    #[test]
+    fn guess_speed_rewards_speed_first_place_and_known_proposals() {
+        let scoring = ScoringRule::GuessSpeed.imp();
+        assert_eq!(
+            scoring.guess_points(1, 30, 30),
+            GUESS_BASE + GUESS_SPEED + FIRST_GUESS_BONUS
+        );
+        assert_eq!(
+            scoring.guess_points(2, 15, 30),
+            GUESS_BASE + GUESS_SPEED / 2
+        );
+        assert_eq!(scoring.guess_points(3, 0, 30), GUESS_BASE);
+        assert_eq!(
+            scoring.guess_points(2, 99, 30),
+            GUESS_BASE + GUESS_SPEED,
+            "clamped"
+        );
+        assert!(scoring.guess_points(2, 20, 30) > scoring.guess_points(2, 10, 30));
+        assert_eq!(scoring.proposer_points(3), 3 * PROPOSER_PER_GUESS);
+        assert_eq!(
+            scoring.proposer_points(0),
+            0,
+            "an obscure pick nobody gets scores nothing"
+        );
+        assert_eq!(ScoringRule::VotesToPicker.imp().proposer_points(3), 0);
+    }
+
+    #[test]
+    fn name_that_tune_rules_only_combine_one_way() {
+        let tune = Rules {
+            prompt: PromptRule::None,
+            collect: CollectRule::Propose,
+            ballot: BallotRule::None,
+            winner: WinnerRule::None,
+            challenge: ChallengeRule::GuessTitle,
+            scoring: ScoringRule::GuessSpeed,
+        };
+        assert!(tune.validate().is_ok());
+        for broken in [
+            Rules {
+                ballot: BallotRule::Pairs,
+                ..tune
+            },
+            Rules {
+                winner: WinnerRule::MostVotes,
+                ..tune
+            },
+            Rules {
+                challenge: ChallengeRule::Listen,
+                ..tune
+            },
+            Rules {
+                scoring: ScoringRule::VotesToPicker,
+                ..tune
+            },
+            Rules {
+                collect: CollectRule::Pick,
+                ..tune
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+        let mut pick = rules(BallotRule::All, WinnerRule::MostVotes);
+        pick.scoring = ScoringRule::GuessSpeed;
+        assert!(pick.validate().is_err());
+        assert!(
+            rules(BallotRule::None, WinnerRule::None)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

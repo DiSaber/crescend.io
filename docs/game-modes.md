@@ -78,7 +78,36 @@ Song length is a mode decision: presets set `play_seconds`, and hosts can change
 - **Answer key**: the curated starter title when the song has one; otherwise the YouTube title cleaned of a leading "Artist - ", bracketed or parenthesized suffixes ("(Official Video)", "[HQ]") and "ft."/"feat." tails.
 - **Matching**: normalized (case, accents, punctuation removed) and forgiving (a small edit distance relative to length, or all significant words present). Exact rules live in tests with real titles.
 - **Scoring** (`GuessSpeed`): first correct guess gets the most points, decreasing with time; the proposer earns a bonus for each person who guessed it, so obscure picks aren't automatically best.
-- **Hidden title**: players must not see the title or video while guessing. **Open risk:** YouTube's API policies restrict obscuring the embedded player. Check the policy before choosing an approach (for example, a dedicated audio-style view the policy allows) and record the decision here with a citation.
+- **Hidden title**: players must not see the title or video while guessing. Decision below.
+
+#### Hidden title: what YouTube's policies allow (checked 2026-11-05)
+
+Sources: [YouTube API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies)
+and [Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality) (RMF).
+
+Not allowed, so the frontend must not do any of these to an embedded player:
+
+- **Covering or blurring it.** RMF "Overlays and frames": you "must not display overlays, frames, or other visual elements in front of" any part of the player. Developer Policies III.I.4: "must not remove, obscure, alter, or disable any links that appear in YouTube players" (the title is such a link).
+- **Altering or blocking it.** III.I.6: do not "modify, build upon, or block any portion or functionality of a YouTube player". RMF "YouTube Player attributes": no changes not described in the API documentation.
+- **Audio-only tricks.** III.I.7: do not "separate, isolate, or modify the audio or video components". So no zero-size, off-screen or transparent player used to play only the sound.
+- **Shrinking it.** RMF "Embedded YouTube Player size": a viewport "at least 200px by 200px".
+- **Playing it hidden.** III.I.9: no features that play content "from a background player". RMF autoplay: scripted playback waits until "more than half of the player is visible".
+
+Allowed: a normal, visible, unobscured player of at least 200×200 px, started with the
+documented `start` parameter or `seekTo` for `clip_start_seconds`, and stopped with
+the IFrame API. Nothing in the policies requires every screen in the room to show the
+player, so phones simply don't embed one.
+
+**Recommended approach (built into the backend):** the host's device is the DJ. It
+plays the clip in an ordinary visible player, the only screen that gets the video
+during guessing; the backend sends guessers `now_playing.hidden: true` with no song,
+title or proposer, and the host never guesses (`403 host_cannot_guess`). Phones show
+only the guess box, timer and scoreboard. The shared TV view (#48) shows the game
+board, not the player, during `guess`. Because the player's own title bar can't be
+hidden, the setup screen should tell the host to keep the playing screen out of
+players' sight (a laptop or phone on a speaker works); if the host plays on the TV
+everyone watches, the title will be visible and the round is honor-system. During
+`reveal` the clip keeps playing and everyone may see it.
 
 ## Saved modes and tracking (level 3)
 
@@ -131,6 +160,34 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   sits out the pair holding their own song. Every pair winner plays. `WinnerBonus` is
   50 points per contested pair won; byes play but score nothing, so a bye is never
   better than a win.
+
+- **Name That Tune flow (G3).** One `collect` for proposals (default 2 each, 90 s),
+  then per round `guess` (the clip plays hidden for `play_seconds`, default 30 from
+  `clip_start_seconds` 30) and `reveal` (`reveal_seconds`, default 8, clip plays on).
+  Play order is round-robin by proposer, so everyone's first song plays before anyone's
+  second; `rounds: 0` plays every proposal, otherwise the count is capped by it. The
+  same video can be proposed once per game. `Propose` requires ballot and winner
+  `none`, challenge `guess_title` and scoring `guess_speed`, and the reverse.
+- **Who guesses (G3).** Everyone except the host (their player shows the video) and
+  the round's proposer. Guessing closes early once every eligible player is right.
+  Each player gets 10 wrong guesses per round.
+- **Answer keys (G3).** Stored at proposal time: the curated starter title when the
+  video is in the starter catalog, else the YouTube title with HTML entities decoded,
+  bracketed parts removed, the tail from " ft."/" feat."/" featuring " cut, split on
+  " - ", " | " and similar separators, segments that are only packaging ("Official
+  Music Video", "Lyrics", "4K") dropped, and the second remaining segment taken as the
+  title (the first is the artist). Strong packaging words alone mark a segment, so
+  songs called "Clean" or "Music" survive. Cases live in `game/answer.rs` tests.
+- **Matching (G3).** Both sides are lowercased with accents, apostrophes and
+  punctuation removed. A guess is right if, ignoring spaces, it is within 0 edits
+  (answers of 1-3 letters), 1 (4-8), 2 (9-14) or length/7 (longer) of the answer, or
+  if it contains every significant answer word (stopwords like "the", "of" optional;
+  words of 5+ letters may have one typo) with at most three extra words, so "queen
+  bohemian rhapsody" counts but a list of titles does not.
+- **`GuessSpeed` points (G3).** A correct guess earns 50 plus up to 50 in proportion
+  to the time left, and the first correct guesser adds 25 (so 125 at best, 50 at the
+  buzzer). The proposer earns 20 per correct guesser at the reveal: a song nobody
+  knows scores its proposer nothing.
 
 ## API (sketch; the backend's OpenAPI docs are the source of truth once built)
 

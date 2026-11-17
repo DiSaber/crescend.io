@@ -62,7 +62,7 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
     // Pair 1: host 1 vote vs g0 1 vote -> earliest (host). Pair 2: g1 1 vs g2 1 -> g1.
     assert_eq!((game.round, game.phase), (2, Phase::Collect));
     let playing = game.now_playing.unwrap();
-    assert_eq!(playing.song.video_id, "hosthost01");
+    assert_eq!(playing.song.as_ref().unwrap().video_id, "hosthost01");
     assert_eq!(playing.ends_at.unwrap().timestamp(), f.now() + 60);
     assert_eq!(game.up_next_count, 1);
     let result = game.last_result.unwrap();
@@ -89,7 +89,7 @@ async fn duel_pairs_songs_takes_one_vote_per_pair_and_plays_every_pair_winner() 
     f.tick().await;
     let game = f.view(g0, m0).await;
     let playing = game.now_playing.unwrap();
-    assert_eq!(playing.song.video_id, "guest00001");
+    assert_eq!(playing.song.as_ref().unwrap().video_id, "guest00001");
     assert_eq!(playing.started_at.timestamp(), f.now());
     assert_eq!(game.up_next_count, 0);
 }

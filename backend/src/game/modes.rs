@@ -18,6 +18,13 @@ pub struct Settings {
     pub songs_per_player: i64,
     pub self_vote: bool,
     pub overlap_next_round: bool,
+    /// How long the answer shows after a Name That Tune round.
+    #[serde(default = "default_reveal")]
+    pub reveal_seconds: i64,
+}
+
+fn default_reveal() -> i64 {
+    8
 }
 
 /// A mode as the engine runs it: rule choices plus concrete settings.
@@ -50,6 +57,7 @@ pub struct SettingSchema {
     pub unit: Option<&'static str>,
 }
 
+#[derive(Clone, Copy)]
 struct Spec {
     key: &'static str,
     label: &'static str,
@@ -132,6 +140,14 @@ const SPECS: &[Spec] = &[
         "overlap_next_round",
         "Next round picks while the winner plays",
     ),
+    int(
+        "reveal_seconds",
+        "Answer shows for",
+        3,
+        30,
+        1,
+        Some("seconds"),
+    ),
 ];
 
 impl Settings {
@@ -146,6 +162,7 @@ impl Settings {
             "songs_per_player" => self.songs_per_player.into(),
             "self_vote" => self.self_vote.into(),
             "overlap_next_round" => self.overlap_next_round.into(),
+            "reveal_seconds" => self.reveal_seconds.into(),
             _ => serde_json::Value::Null,
         }
     }
@@ -162,17 +179,47 @@ impl Settings {
             "songs_per_player" => self.songs_per_player = value,
             "self_vote" => self.self_vote = flag,
             "overlap_next_round" => self.overlap_next_round = flag,
+            "reveal_seconds" => self.reveal_seconds = value,
             _ => unreachable!("unknown setting {key}"),
         }
     }
 }
 
-/// The keys a rule set exposes, in display order. Unexposed keys keep their defaults.
-pub fn keys(rules: &Rules) -> Vec<&'static str> {
+/// The settings a rule set exposes, in display order, with labels and limits for
+/// that rule set. Unexposed keys keep their defaults.
+fn specs(rules: &Rules) -> Vec<Spec> {
+    let guessing = rules.challenge == ChallengeRule::GuessTitle;
     SPECS
         .iter()
-        .map(|s| s.key)
-        .filter(|key| !(*key == "votes_per_player" && rules.ballot == BallotRule::Pairs))
+        .copied()
+        .filter(|spec| match spec.key {
+            "votes_per_player" => rules.ballot == BallotRule::All,
+            "vote_seconds" | "self_vote" | "overlap_next_round" => !guessing,
+            "reveal_seconds" => guessing,
+            _ => true,
+        })
+        .map(|spec| match (guessing, spec.key) {
+            (true, "rounds") => Spec {
+                label: "Rounds (0 = every song)",
+                ..spec
+            },
+            (true, "collect_seconds") => Spec {
+                label: "Time to propose songs",
+                ..spec
+            },
+            (true, "songs_per_player") => Spec {
+                label: "Songs each player proposes",
+                ..spec
+            },
+            // Name That Tune plays clips: the clip is the guessing window.
+            (true, "play_seconds") => Spec {
+                label: "Guess time",
+                min: 10,
+                max: 120,
+                ..spec
+            },
+            _ => spec,
+        })
         .collect()
 }
 
@@ -191,11 +238,11 @@ pub fn customize(
     overrides: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Definition, ModeError> {
     definition.rules.validate().map_err(ModeError::Rules)?;
-    let exposed = keys(&definition.rules);
+    let exposed = specs(&definition.rules);
     for (key, value) in overrides {
-        let spec = SPECS
+        let spec = exposed
             .iter()
-            .find(|spec| spec.key == key && exposed.contains(&spec.key))
+            .find(|spec| spec.key == key)
             .ok_or_else(|| ModeError::Setting(format!("unknown setting {key}")))?;
         let value = match spec.kind {
             SettingType::Boolean => value.as_bool().map(i64::from),
@@ -214,15 +261,16 @@ pub fn customize(
 }
 
 /// Starting settings for a custom rule set: the preset that shares its collect rule.
-pub fn default_settings(_rules: &Rules) -> Settings {
-    party().settings
+pub fn default_settings(rules: &Rules) -> Settings {
+    match rules.collect {
+        CollectRule::Pick => party().settings,
+        CollectRule::Propose => name_that_tune().settings,
+    }
 }
 
 pub fn schema(definition: &Definition) -> Vec<SettingSchema> {
-    let keys = keys(&definition.rules);
-    SPECS
-        .iter()
-        .filter(|spec| keys.contains(&spec.key))
+    specs(&definition.rules)
+        .into_iter()
         .map(|spec| {
             let integer = matches!(spec.kind, SettingType::Integer);
             SettingSchema {
@@ -266,6 +314,33 @@ fn party() -> Definition {
             songs_per_player: 1,
             self_vote: false,
             overlap_next_round: true,
+            reveal_seconds: default_reveal(),
+        },
+    }
+}
+
+fn name_that_tune() -> Definition {
+    Definition {
+        name: "Name That Tune".into(),
+        rules: Rules {
+            prompt: PromptRule::None,
+            collect: CollectRule::Propose,
+            ballot: BallotRule::None,
+            winner: WinnerRule::None,
+            challenge: ChallengeRule::GuessTitle,
+            scoring: ScoringRule::GuessSpeed,
+        },
+        settings: Settings {
+            rounds: 0,
+            collect_seconds: 90,
+            vote_seconds: 30,
+            play_seconds: 30,
+            clip_start_seconds: 30,
+            votes_per_player: 1,
+            songs_per_player: 2,
+            self_vote: false,
+            overlap_next_round: false,
+            reveal_seconds: default_reveal(),
         },
     }
 }
@@ -306,6 +381,11 @@ pub const PRESETS: &[Preset] = &[
         id: "duel",
         description: "Songs face off in pairs; every pair winner plays.",
         definition: duel,
+    },
+    Preset {
+        id: "name_that_tune",
+        description: "Everyone secretly proposes songs; race to type each title.",
+        definition: name_that_tune,
     },
 ];
 
@@ -354,6 +434,17 @@ mod tests {
         // Pairs always take one vote per pair, so the setting is not exposed.
         assert!(customize(duel(), &overrides(json!({"votes_per_player": 2}))).is_err());
         assert!(!schema(&duel()).iter().any(|s| s.key == "votes_per_player"));
+        let tune = schema(&name_that_tune());
+        let guess = tune.iter().find(|s| s.key == "play_seconds").unwrap();
+        assert_eq!((guess.min, guess.label), (Some(10), "Guess time"));
+        assert!(
+            !tune
+                .iter()
+                .any(|s| s.key == "vote_seconds" || s.key == "overlap_next_round")
+        );
+        assert!(customize(name_that_tune(), &overrides(json!({"play_seconds": 0}))).is_err());
+        assert!(customize(name_that_tune(), &overrides(json!({"reveal_seconds": 5}))).is_ok());
+        assert!(customize(party(), &overrides(json!({"reveal_seconds": 5}))).is_err());
         let mut broken = party();
         broken.rules.winner = WinnerRule::PairWinners;
         assert!(matches!(

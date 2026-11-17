@@ -34,6 +34,7 @@ pub fn lobby_router() -> Router<AppState> {
             post(submit),
         )
         .route("/memberships/{membership_id}/game/votes", post(vote))
+        .route("/memberships/{membership_id}/game/guesses", post(guess))
 }
 
 pub fn modes_router() -> Router<AppState> {
@@ -206,6 +207,31 @@ pub(super) async fn vote(
     Ok(Json(response))
 }
 
+#[utoipa::path(post, path = "/api/lobbies/memberships/{membership_id}/game/guesses", tag = "Games",
+    security(("bearer_auth" = [])), params(("membership_id" = String, Path)), request_body = GameGuessRequest,
+    responses((status = 200, body = GameGuessResponse), (status = 400, body = ErrorResponse), (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse), (status = 409, body = ErrorResponse), (status = 413, body = ErrorResponse),
+        (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 503, body = ErrorResponse)))]
+pub(super) async fn guess(
+    State(app): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    path: MembershipPath,
+    request: Request,
+) -> Result<Json<GameGuessResponse>, GameError> {
+    let id = membership(path)?;
+    let payload: GameGuessRequest = json(request, BODY_LIMIT).await?;
+    let text = payload.text.trim();
+    if !(1..=crate::game::answer::MAX_GUESS_CHARS).contains(&text.chars().count()) {
+        return Err(GameError::InvalidRequest);
+    }
+    let response = app
+        .database
+        .guess_game(&user, &id, text, || (app.auth.clock)())
+        .await?;
+    publish(&app, response.changed, &response.game);
+    Ok(Json(response))
+}
+
 /// Publishes on the membership event stream exactly like queue commits.
 fn publish(app: &AppState, changed: bool, view: &GameSnapshot) {
     if changed {
@@ -293,6 +319,22 @@ impl GameError {
                 "submission_limit_reached",
                 "You have submitted all your songs for this round.",
             ),
+            Self::DuplicateSong => (
+                409,
+                "song_already_proposed",
+                "That song is already in this game; pick another.",
+            ),
+            Self::HostCannotGuess => (
+                403,
+                "host_cannot_guess",
+                "The host's screen shows the song, so the host does not guess.",
+            ),
+            Self::OwnSong => (
+                409,
+                "own_song",
+                "This is your song; you score when others guess it.",
+            ),
+            Self::GuessLimit => (409, "guess_limit_reached", "No guesses left this round."),
             Self::SubmissionUnavailable => (
                 404,
                 "game_submission_unavailable",

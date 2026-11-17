@@ -60,6 +60,10 @@ pub enum Phase {
     Vote,
     /// The round is decided; its winners play or wait to play.
     Play,
+    /// Name That Tune: a hidden clip plays and players race to type its title.
+    Guess,
+    /// Name That Tune: the answer and the round's guessers are shown.
+    Reveal,
     /// The game is over; the scoreboard stays until the next start or dismissal.
     Ended,
 }
@@ -70,6 +74,8 @@ impl Phase {
             Self::Collect => "collect",
             Self::Vote => "vote",
             Self::Play => "play",
+            Self::Guess => "guess",
+            Self::Reveal => "reveal",
             Self::Ended => "ended",
         }
     }
@@ -78,6 +84,8 @@ impl Phase {
             "collect" => Self::Collect,
             "vote" => Self::Vote,
             "play" => Self::Play,
+            "guess" => Self::Guess,
+            "reveal" => Self::Reveal,
             "ended" => Self::Ended,
             _ => return None,
         })
@@ -145,12 +153,28 @@ pub struct ResultSong {
     pub thumbnail_url: String,
 }
 
+/// One correct Name That Tune guess, in the order they arrived.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GuessResult {
+    pub user_id: String,
+    /// 1 for the first correct guess.
+    pub rank: i64,
+    pub points: i64,
+}
+
 /// The most recently closed round, revealed to everyone.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RoundResult {
     pub round: i64,
-    /// Every submission of the round with its final votes, winners first.
+    /// Every submission of the round with its final votes, winners first. In Name
+    /// That Tune this is the round's song, with the proposer's points.
     pub entries: Vec<ResultEntry>,
+    /// Name That Tune: the title guesses were matched against.
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// Name That Tune: correct guessers, fastest first.
+    #[serde(default)]
+    pub guesses: Vec<GuessResult>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -158,14 +182,33 @@ pub struct NowPlaying {
     /// Pass this to `advance` as `play_seq` when the song ends on the host player.
     pub play_seq: i64,
     pub round: i64,
-    pub song: GameSong,
-    pub submitted_by_user_id: String,
+    /// True while a Name That Tune title is secret: `song` and
+    /// `submitted_by_user_id` are null for everyone except the host, whose player
+    /// needs the video.
+    pub hidden: bool,
+    pub song: Option<GameSong>,
+    pub submitted_by_user_id: Option<String>,
     pub start_seconds: i64,
     #[schema(value_type = String, format = DateTime)]
     pub started_at: DateTime<Utc>,
     /// Null plays the full song; the host reports its end.
     #[schema(value_type = Option<String>, format = DateTime)]
     pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// The caller's standing in the current Name That Tune round (guess and reveal).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GuessView {
+    /// False for the host (their screen shows the video) and the song's proposer.
+    pub eligible: bool,
+    /// The caller proposed this round's song: they sit out and score from it.
+    pub own_song: bool,
+    pub correct: bool,
+    pub points: i64,
+    pub wrong_guesses: i64,
+    pub guesses_left: i64,
+    /// Correct guessers so far, without identities until the reveal.
+    pub correct_count: i64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -191,13 +234,15 @@ pub struct GameView {
     pub phase_seq: i64,
     #[schema(value_type = Option<String>, format = DateTime)]
     pub phase_ends_at: Option<DateTime<Utc>>,
-    /// The caller's own submissions for this round.
+    /// The caller's own submissions for this round (Name That Tune: all their proposals).
     pub my_submissions: Vec<OwnSubmission>,
-    /// How many songs this round has, without identities.
+    /// How many songs this round has (Name That Tune: proposals), without identities.
     pub submission_count: i64,
     pub ballot: Option<BallotView>,
     pub last_result: Option<RoundResult>,
     pub now_playing: Option<NowPlaying>,
+    /// Present in Name That Tune guess and reveal phases.
+    pub guess: Option<GuessView>,
     /// Decided songs waiting behind `now_playing`.
     pub up_next_count: i64,
     /// Highest points first; ties by account ID.
@@ -233,6 +278,23 @@ pub struct GameSubmissionResponse {
 #[serde(deny_unknown_fields)]
 pub struct GameVoteRequest {
     pub submission_id: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GameGuessRequest {
+    /// 1-100 characters after trimming.
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GameGuessResponse {
+    /// False when the guess was a repeat after an earlier correct one.
+    pub changed: bool,
+    pub correct: bool,
+    /// Points this guess earned (the earlier ones on a repeat).
+    pub points: i64,
+    pub game: GameSnapshot,
 }
 
 /// Exactly one field: `phase_seq` skips that phase; `play_seq` ends that song.

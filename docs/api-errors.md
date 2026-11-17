@@ -67,7 +67,9 @@ a vote target that is not on the current ballot. Conflicts (all 409): `game_runn
 (start while running), `game_not_running`, `game_phase_closed` (action not open in
 this phase), `game_phase_changed` (stale `phase_seq`), `game_song_changed`
 (`play_seq` is not the playing song), `submission_limit_reached`,
-`vote_limit_reached`, `self_vote_forbidden` and `idempotency_conflict`. Song links
+`vote_limit_reached`, `self_vote_forbidden`, `idempotency_conflict`, and for Name
+That Tune `song_already_proposed`, `own_song` (the proposer guessing their own song)
+and `guess_limit_reached`. The host guessing gets `403 host_cannot_guess`. Song links
 and metadata fail like the queue (`422 invalid_url`, `502 upstream_unavailable`,
 `502 metadata_unavailable`). Contention is `503 temporarily_unavailable`; unexpected
 storage failures are a sanitized `500 internal_error`. Failures change nothing.

@@ -7,7 +7,13 @@ use super::Database;
 use super::queue::{BoundQueue, Permission, authorize, check_deadlines, increment};
 use crate::{
     auth::AuthenticatedUser,
-    game::{GameError, modes::Definition, random_id, rules::Entry},
+    game::{
+        GameError,
+        answer::{MAX_WRONG_GUESSES, clean_title, matches},
+        modes::Definition,
+        random_id,
+        rules::{ChallengeRule, CollectRule, Entry},
+    },
     models::{
         game::*,
         lobby::LobbyId,
@@ -36,6 +42,8 @@ pub(crate) struct Game {
     pub phase_seq: i64,
     pub phase_ends_at: Option<i64>,
     pub last_result: Option<RoundResult>,
+    /// The lobby host: their player shows the video, so they never guess.
+    pub owner: i64,
 }
 
 fn corrupt(what: &str) -> sqlx::Error {
@@ -43,7 +51,7 @@ fn corrupt(what: &str) -> sqlx::Error {
 }
 
 async fn load(tx: &mut Tx<'_>, lobby: &str) -> Result<Option<Game>, GameError> {
-    let Some(row) = sqlx::query("SELECT * FROM games WHERE lobby_id = ?")
+    let Some(row) = sqlx::query("SELECT g.*, l.owner_user_id FROM games g JOIN lobbies l ON l.id = g.lobby_id WHERE g.lobby_id = ?")
         .bind(lobby)
         .fetch_optional(&mut **tx)
         .await?
@@ -71,15 +79,17 @@ async fn load(tx: &mut Tx<'_>, lobby: &str) -> Result<Option<Game>, GameError> {
         last_result: last_result
             .map(|value| serde_json::from_str(&value).map_err(|_| corrupt("result")))
             .transpose()?,
+        owner: row.try_get("owner_user_id")?,
     }))
 }
 
 async fn save(tx: &mut Tx<'_>, game: &Game, now: i64) -> Result<(), GameError> {
     let ended = game.status == GameStatus::Ended;
-    sqlx::query("UPDATE games SET status = ?, round = ?, phase = ?, phase_seq = ?, phase_ends_at = ?, last_result = ?,
+    sqlx::query("UPDATE games SET status = ?, round = ?, total_rounds = ?, phase = ?, phase_seq = ?, phase_ends_at = ?, last_result = ?,
         ended_at = CASE WHEN ? THEN coalesce(ended_at, ?) ELSE NULL END WHERE id = ?")
         .bind(if ended { "ended" } else { "running" })
         .bind(game.round)
+        .bind(game.total_rounds)
         .bind(game.phase.as_str())
         .bind(game.phase_seq)
         .bind(game.phase_ends_at)
@@ -204,8 +214,147 @@ async fn phase_complete(tx: &mut Tx<'_>, game: &Game) -> Result<bool, GameError>
                     >= votes_needed(game, &groups, *user)
             }))
         }
-        Phase::Play | Phase::Ended => Ok(false),
+        Phase::Guess => {
+            let (_, proposer, _) = tune_song(tx, game).await?;
+            let correct: Vec<i64> = sqlx::query_scalar(
+                "SELECT user_id FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL",
+            )
+            .bind(&game.id)
+            .bind(game.round)
+            .fetch_all(&mut **tx)
+            .await?;
+            Ok(members
+                .iter()
+                .filter(|user| **user != game.owner && **user != proposer)
+                .all(|user| correct.contains(user)))
+        }
+        Phase::Play | Phase::Reveal | Phase::Ended => Ok(false),
     }
+}
+
+fn proposing(game: &Game) -> bool {
+    game.definition.rules.collect == CollectRule::Propose
+}
+
+/// The song the current Name That Tune round plays: ID, proposer and answer key.
+async fn tune_song(tx: &mut Tx<'_>, game: &Game) -> Result<(String, i64, String), GameError> {
+    let row: Option<(String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, user_id, answer FROM game_submissions WHERE game_id = ? AND play_round = ?",
+    )
+    .bind(&game.id)
+    .bind(game.round)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (id, proposer, answer) = row.ok_or_else(|| corrupt("round song"))?;
+    Ok((id, proposer, answer.ok_or_else(|| corrupt("answer"))?))
+}
+
+/// Round-robin over proposers (in order of their first proposal), so everyone's
+/// first song plays before anyone's second.
+fn play_order(entries: &[Entry]) -> Vec<Entry> {
+    let mut players: Vec<(i64, Vec<Entry>)> = Vec::new();
+    for entry in entries {
+        match players.iter_mut().find(|(user, _)| *user == entry.user_id) {
+            Some((_, songs)) => songs.push(entry.clone()),
+            None => players.push((entry.user_id, vec![entry.clone()])),
+        }
+    }
+    let longest = players
+        .iter()
+        .map(|(_, songs)| songs.len())
+        .max()
+        .unwrap_or(0);
+    (0..longest)
+        .flat_map(|turn| {
+            players
+                .iter()
+                .filter_map(move |(_, songs)| songs.get(turn).cloned())
+        })
+        .collect()
+}
+
+/// Proposals are in: fix the play order and the round count, then start round 1.
+async fn begin_guessing(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
+    let order = play_order(&round_entries(tx, game).await?);
+    if order.is_empty() {
+        return end(tx, game).await;
+    }
+    for (index, entry) in order.iter().enumerate() {
+        sqlx::query("UPDATE game_submissions SET play_round = ? WHERE id = ?")
+            .bind(index as i64 + 1)
+            .bind(&entry.id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    let available = order.len() as i64;
+    game.total_rounds = Some(match game.definition.settings.rounds {
+        0 => available,
+        rounds => rounds.min(available),
+    });
+    game.round = 1;
+    start_guess(tx, game, now).await
+}
+
+/// Plays the round's song (hidden) and opens guessing for `play_seconds`.
+async fn start_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
+    let (submission, _, _) = tune_song(tx, game).await?;
+    sqlx::query("INSERT INTO game_plays(game_id, seq, round, submission_id, started_at, finished)
+        VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM game_plays WHERE game_id = ?), ?, ?, ?, 0)")
+        .bind(&game.id).bind(&game.id).bind(game.round).bind(&submission).bind(now)
+        .execute(&mut **tx).await?;
+    let ends = later(now, game.definition.settings.play_seconds)?;
+    enter(game, Phase::Guess, Some(ends));
+    Ok(())
+}
+
+/// Guessing is over: score the proposer and reveal the answer while the clip plays on.
+async fn close_guess(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
+    let (submission, proposer, answer) = tune_song(tx, game).await?;
+    let guesses: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT user_id, rank, points FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL ORDER BY rank",
+    )
+    .bind(&game.id)
+    .bind(game.round)
+    .fetch_all(&mut **tx)
+    .await?;
+    let points = game
+        .definition
+        .rules
+        .scoring
+        .imp()
+        .proposer_points(guesses.len() as i64);
+    if points > 0 {
+        add_points(tx, game, proposer, points).await?;
+    }
+    let (song, _) = song(tx, &submission).await?;
+    game.last_result = Some(RoundResult {
+        round: game.round,
+        entries: vec![ResultEntry {
+            submission_id: submission,
+            song: ResultSong {
+                video_id: song.video_id,
+                title: song.title,
+                author_name: song.author_name,
+                thumbnail_url: song.thumbnail_url,
+            },
+            submitted_by_user_id: proposer.to_string(),
+            votes: 0,
+            winner: true,
+            points,
+        }],
+        answer: Some(answer),
+        guesses: guesses
+            .into_iter()
+            .map(|(user, rank, points)| GuessResult {
+                user_id: user.to_string(),
+                rank,
+                points,
+            })
+            .collect(),
+    });
+    let ends = later(now, game.definition.settings.reveal_seconds)?;
+    enter(game, Phase::Reveal, Some(ends));
+    Ok(())
 }
 
 async fn unfinished_plays(
@@ -240,9 +389,10 @@ async fn phase_ready(tx: &mut Tx<'_>, game: &Game, now: i64) -> Result<bool, Gam
         return Ok(false);
     }
     match game.phase {
-        Phase::Collect | Phase::Vote => {
+        Phase::Collect | Phase::Vote | Phase::Guess => {
             Ok(game.phase_ends_at.is_some_and(|at| at <= now) || phase_complete(tx, game).await?)
         }
+        Phase::Reveal => Ok(game.phase_ends_at.is_some_and(|at| at <= now)),
         Phase::Play => play_phase_done(tx, game).await,
         Phase::Ended => Ok(false),
     }
@@ -296,6 +446,20 @@ async fn finish_play(tx: &mut Tx<'_>, game: &Game, seq: i64) -> Result<(), GameE
 async fn transition(tx: &mut Tx<'_>, game: &mut Game, now: i64) -> Result<(), GameError> {
     let settings = game.definition.settings.clone();
     match game.phase {
+        Phase::Collect if proposing(game) => begin_guessing(tx, game, now).await?,
+        Phase::Guess => close_guess(tx, game, now).await?,
+        Phase::Reveal => {
+            sqlx::query("UPDATE game_plays SET finished = 1 WHERE game_id = ? AND finished = 0")
+                .bind(&game.id)
+                .execute(&mut **tx)
+                .await?;
+            if more_rounds(game) {
+                game.round += 1;
+                start_guess(tx, game, now).await?;
+            } else {
+                end(tx, game).await?;
+            }
+        }
         Phase::Collect => {
             let entries = round_entries(tx, game).await?;
             if entries.len() < 2 {
@@ -401,6 +565,8 @@ async fn close_round(
     game.last_result = Some(RoundResult {
         round: game.round,
         entries: result,
+        answer: None,
+        guesses: Vec::new(),
     });
     enter(game, Phase::Play, None);
     Ok(())
@@ -474,11 +640,13 @@ fn utc(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>, GameError> {
 }
 
 async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameError> {
+    // Name That Tune proposals all belong to the single collect round.
+    let submission_round = if proposing(game) { 1 } else { game.round };
     let mine: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM game_submissions WHERE game_id = ? AND round = ? AND user_id = ? ORDER BY seq",
     )
     .bind(&game.id)
-    .bind(game.round)
+    .bind(submission_round)
     .bind(user)
     .fetch_all(&mut **tx)
     .await?;
@@ -492,7 +660,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
     let submission_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM game_submissions WHERE game_id = ? AND round = ?")
             .bind(&game.id)
-            .bind(game.round)
+            .bind(submission_round)
             .fetch_one(&mut **tx)
             .await?;
     let ballot = if game.phase == Phase::Vote {
@@ -541,16 +709,57 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
     if let Some((seq, round, submission, Some(started), ends)) = plays.first().cloned() {
         up_next_count -= 1;
         let (song, picker) = song(tx, &submission).await?;
+        // The title stays secret while players guess; the host's player needs the video.
+        let hidden = game.definition.rules.challenge == ChallengeRule::GuessTitle
+            && game.phase == Phase::Guess
+            && user != game.owner;
         now_playing = Some(NowPlaying {
             play_seq: seq,
             round,
-            song,
-            submitted_by_user_id: picker.to_string(),
+            hidden,
+            song: (!hidden).then_some(song),
+            submitted_by_user_id: (!hidden).then(|| picker.to_string()),
             start_seconds: game.definition.settings.clip_start_seconds,
             started_at: utc(started)?,
             ends_at: ends.map(utc).transpose()?,
         });
     }
+    let guess = if matches!(game.phase, Phase::Guess | Phase::Reveal) {
+        let (_, proposer, _) = tune_song(tx, game).await?;
+        let mine: Option<(i64, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT wrong, rank, points FROM game_guesses WHERE game_id = ? AND round = ? AND user_id = ?",
+        )
+        .bind(&game.id)
+        .bind(game.round)
+        .bind(user)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let correct_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL",
+        )
+        .bind(&game.id)
+        .bind(game.round)
+        .fetch_one(&mut **tx)
+        .await?;
+        let (wrong, rank, points) = mine.unwrap_or((0, None, 0));
+        let eligible = user != game.owner && user != proposer;
+        let open = eligible && rank.is_none() && game.phase == Phase::Guess;
+        Some(GuessView {
+            eligible,
+            own_song: user == proposer,
+            correct: rank.is_some(),
+            points,
+            wrong_guesses: wrong,
+            guesses_left: if open {
+                (MAX_WRONG_GUESSES - wrong).max(0)
+            } else {
+                0
+            },
+            correct_count,
+        })
+    } else {
+        None
+    };
     let active = members(tx, &game.lobby_id).await?;
     let mut scores: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
         "SELECT user_id, points FROM game_scores WHERE game_id = ?",
@@ -580,6 +789,7 @@ async fn view(tx: &mut Tx<'_>, game: &Game, user: i64) -> Result<GameView, GameE
         ballot,
         last_result: game.last_result.clone(),
         now_playing,
+        guess,
         up_next_count,
         scoreboard: scoreboard
             .into_iter()
@@ -841,12 +1051,21 @@ impl Database {
             if used >= game.definition.settings.songs_per_player {
                 return Err(GameError::SubmissionLimit);
             }
+            if proposing(&game) {
+                // A song plays once per game, so a second proposal of it is refused.
+                let taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM game_submissions WHERE game_id = ? AND video_id = ?)")
+                    .bind(&game.id).bind(&video.video_id).fetch_one(&mut *tx).await?;
+                if taken {
+                    return Err(GameError::DuplicateSong);
+                }
+            }
             let id = random_id()?;
-            sqlx::query("INSERT INTO game_submissions(id, game_id, round, user_id, request_id, seq, video_id, title, author_name, thumbnail_url, embed_url, submitted_at)
-                VALUES (?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM game_submissions WHERE game_id = ?), ?, ?, ?, ?, ?, ?)")
+            let answer = answer_key(&mut tx, video).await?;
+            sqlx::query("INSERT INTO game_submissions(id, game_id, round, user_id, request_id, seq, video_id, title, author_name, thumbnail_url, embed_url, submitted_at, answer)
+                VALUES (?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM game_submissions WHERE game_id = ?), ?, ?, ?, ?, ?, ?, ?)")
                 .bind(&id).bind(&game.id).bind(game.round).bind(user.id).bind(request).bind(&game.id)
                 .bind(&video.video_id).bind(&video.title).bind(&video.author_name)
-                .bind(&video.thumbnail_url).bind(&video.embed_url).bind(now)
+                .bind(&video.thumbnail_url).bind(&video.embed_url).bind(now).bind(&answer)
                 .execute(&mut *tx).await?;
             settle(&mut tx, &mut game, now).await?;
             inserted = true;
@@ -857,6 +1076,86 @@ impl Database {
         Ok(GameSubmissionResponse {
             changed: inserted,
             submission_id: id,
+            game,
+        })
+    }
+
+    pub(crate) async fn guess_game(
+        &self,
+        user: &AuthenticatedUser,
+        membership: &str,
+        text: &str,
+        clock: impl Fn() -> i64,
+    ) -> Result<GameGuessResponse, GameError> {
+        let mut tx = self.db_pool.begin_with("BEGIN IMMEDIATE").await?;
+        let bound = authorize(&mut tx, user, membership, Permission::Member, &clock).await?;
+        let now = clock();
+        let (game, mut changed) = current(&mut tx, &bound, now).await?;
+        let mut game = running(game)?;
+        if game.phase != Phase::Guess {
+            return Err(GameError::PhaseClosed);
+        }
+        if user.id == game.owner {
+            return Err(GameError::HostCannotGuess);
+        }
+        let (_, proposer, answer) = tune_song(&mut tx, &game).await?;
+        if user.id == proposer {
+            return Err(GameError::OwnSong);
+        }
+        let prior: Option<(i64, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT wrong, rank, points FROM game_guesses WHERE game_id = ? AND round = ? AND user_id = ?",
+        )
+        .bind(&game.id)
+        .bind(game.round)
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (wrong, rank, earned) = prior.unwrap_or((0, None, 0));
+        let (guessed, correct, points) = if rank.is_some() {
+            (false, true, earned)
+        } else if wrong >= MAX_WRONG_GUESSES {
+            return Err(GameError::GuessLimit);
+        } else if matches(text, &answer) {
+            let rank: i64 = sqlx::query_scalar(
+                "SELECT count(*) + 1 FROM game_guesses WHERE game_id = ? AND round = ? AND rank IS NOT NULL",
+            )
+            .bind(&game.id)
+            .bind(game.round)
+            .fetch_one(&mut *tx)
+            .await?;
+            let remaining = game.phase_ends_at.unwrap_or(now) - now;
+            let points = game.definition.rules.scoring.imp().guess_points(
+                rank,
+                remaining,
+                game.definition.settings.play_seconds,
+            );
+            sqlx::query("INSERT INTO game_guesses(game_id, round, user_id, wrong, rank, points, correct_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(game_id, round, user_id) DO UPDATE SET rank = excluded.rank, points = excluded.points, correct_at = excluded.correct_at")
+                .bind(&game.id).bind(game.round).bind(user.id).bind(wrong).bind(rank).bind(points).bind(now)
+                .execute(&mut *tx).await?;
+            add_points(&mut tx, &game, user.id, points).await?;
+            (true, true, points)
+        } else {
+            sqlx::query(
+                "INSERT INTO game_guesses(game_id, round, user_id, wrong) VALUES (?, ?, ?, 1)
+                ON CONFLICT(game_id, round, user_id) DO UPDATE SET wrong = wrong + 1",
+            )
+            .bind(&game.id)
+            .bind(game.round)
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await?;
+            (true, false, 0)
+        };
+        if guessed {
+            settle(&mut tx, &mut game, now).await?;
+            changed = true;
+        }
+        let game = finish(tx, bound, user, membership, changed, clock).await?;
+        Ok(GameGuessResponse {
+            changed: guessed,
+            correct,
+            points,
             game,
         })
     }
@@ -992,6 +1291,8 @@ impl Database {
                 video_id TEXT NOT NULL, title TEXT NOT NULL, author_name TEXT NOT NULL,
                 thumbnail_url TEXT NOT NULL, embed_url TEXT NOT NULL,
                 submitted_at INTEGER NOT NULL,
+                answer TEXT,
+                play_round INTEGER CHECK(play_round IS NULL OR play_round >= 1),
                 UNIQUE(game_id, user_id, request_id), UNIQUE(game_id, seq)
             ) STRICT",
             "CREATE TABLE IF NOT EXISTS game_ballot (
@@ -1023,13 +1324,58 @@ impl Database {
                 points INTEGER NOT NULL,
                 PRIMARY KEY(game_id, user_id)
             ) STRICT",
+            "CREATE TABLE IF NOT EXISTS game_guesses (
+                game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+                round INTEGER NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                wrong INTEGER NOT NULL DEFAULT 0 CHECK(wrong >= 0),
+                rank INTEGER CHECK(rank IS NULL OR rank >= 1),
+                points INTEGER NOT NULL DEFAULT 0,
+                correct_at INTEGER,
+                CHECK((rank IS NULL) = (correct_at IS NULL)),
+                PRIMARY KEY(game_id, round, user_id)
+            ) STRICT",
             "CREATE INDEX IF NOT EXISTS game_submissions_round ON game_submissions(game_id, round)",
             "CREATE INDEX IF NOT EXISTS game_votes_round ON game_votes(game_id, round)",
         ] {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
+        // Databases created before Name That Tune lack these columns.
+        for (column, definition) in [
+            ("answer", "answer TEXT"),
+            (
+                "play_round",
+                "play_round INTEGER CHECK(play_round IS NULL OR play_round >= 1)",
+            ),
+        ] {
+            let present: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('game_submissions') WHERE name = ?)",
+            )
+            .bind(column)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !present {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE game_submissions ADD COLUMN {definition}"
+                )))
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
         tx.commit().await
     }
+}
+
+/// The curated starter title when the song has one, else the cleaned YouTube title.
+async fn answer_key(tx: &mut Tx<'_>, video: &VideoMetadata) -> Result<String, GameError> {
+    let starter: Option<String> = sqlx::query_scalar(
+        "SELECT m.title FROM catalog_metadata m JOIN catalog_songs s ON s.id = m.song_id
+         WHERE s.video_id = ? AND m.source = 'starter'",
+    )
+    .bind(&video.video_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(starter.unwrap_or_else(|| clean_title(&video.title)))
 }
 
 async fn receipt(
