@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchImage, type GameView, type Phase } from "../../lib/game";
+import { fetchImage, joinNames, leaders, pairSummary, resultGroups, type GameView, type Phase } from "../../lib/game";
 
 /** Milliseconds until `iso` on the server's clock (`offset` = server minus device). */
 export function remainingMs(iso: string | null, offset: number) {
@@ -60,14 +60,20 @@ export function GameAnnouncer({ game, name }: { game: GameView; name: NameFn }) 
   const result = game.last_result;
   let text = `${roundLabel(game)}. ${phaseName(game)}.`;
   if (game.phase === "reveal" && result) {
+    if (result.note === "nobody_to_guess") text += " Skipped: nobody left to guess.";
     text += ` It was ${result.answer ?? result.entries[0]?.song.title ?? "a mystery"}.`;
-    text += result.guesses.length ? ` ${result.guesses.length} named it; first was ${name(result.guesses[0].user_id, result.guesses[0].nickname)}.` : " Nobody named it.";
+    if (result.note !== "nobody_to_guess") text += result.guesses.length ? ` ${result.guesses.length} named it; first was ${name(result.guesses[0].user_id, result.guesses[0].nickname)}.` : " Nobody named it.";
+  } else if (result && game.mode.rules.ballot === "pairs" && game.phase !== "ended") {
+    text += ` Round ${result.round}: ${resultGroups(result).map(pairSummary).join("; ")}.`;
   } else if (result && game.mode.rules.collect === "pick" && game.phase !== "ended") {
     const winners = result.entries.filter(e => e.winner);
     if (winners.length) text += ` Round ${result.round} winner: ${winners.map(w => `${w.song.title}, picked by ${name(w.submitted_by_user_id, w.submitted_by_nickname)}`).join("; ")}.`;
   }
-  if (game.phase === "ended" && game.scoreboard[0]) {
-    text += game.scoreboard[0].points > 0 ? ` ${name(game.scoreboard[0].user_id, game.scoreboard[0].nickname)} wins with ${game.scoreboard[0].points} points.` : " No points this time.";
+  if (game.phase === "ended") {
+    if (result?.note === "no_proposals") text += " Nobody proposed a song.";
+    const top = leaders(game);
+    const names = joinNames(top.map(t => name(t.user_id, t.nickname)));
+    text += top.length === 0 ? " No points this time." : top.length > 1 ? ` Tie: ${names} share the win with ${top[0].points} points.` : ` ${names} wins with ${top[0].points} points.`;
   }
   return <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{text}</p>;
 }
@@ -81,10 +87,15 @@ export function phaseName(game: GameView) {
   return phaseTitle[game.phase];
 }
 
+/**
+ * "Party · Round 2 of 5". During play with overlap the song playing may be an
+ * earlier round's winner: the play heading names the round actually playing.
+ */
 export function roundLabel(game: GameView) {
   if (game.phase === "ended") return game.mode.name;
   if (game.mode.rules.collect === "propose" && game.phase === "collect") return `${game.mode.name} · setup`;
-  return `${game.mode.name} · Round ${game.round}${game.total_rounds ? ` of ${game.total_rounds}` : ""}`;
+  const round = game.phase === "play" && game.now_playing ? game.now_playing.round : game.round;
+  return `${game.mode.name} · Round ${round}${game.total_rounds ? ` of ${game.total_rounds}` : ""}`;
 }
 
 export type NameFn = (userId: string | null | undefined, nickname: string | null | undefined) => string;

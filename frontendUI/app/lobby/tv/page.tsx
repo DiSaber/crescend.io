@@ -6,17 +6,18 @@ import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from "reac
 import { QRCodeSVG } from "qrcode.react";
 import SignInGate from "../../components/SignInGate";
 import { Countdown, GameAnnouncer, GameImage, Scoreboard, phaseName, playerName, roundLabel, type NameFn } from "../../components/game/bits";
-import { QueueSession } from "../../lib/queue-state";
-import type { GameView } from "../../lib/game";
+import { QueueSession, defaults } from "../../lib/queue-state";
+import { getBoardGame, pairSummary, resultGroups, winnerLine, type GameView } from "../../lib/game";
 
 /**
  * The shared board for a TV or projector (#48): prompt, timer, progress and
  * scoreboard, never a player. During Name That Tune's guess phase it shows no song
  * details at all, even when the host's account opens it, so the room can watch the
- * board while the host device plays the clip out of sight.
+ * board while the host device plays the clip out of sight. It reads the game with
+ * `view=board`, so the answer never even reaches this page's network responses.
  */
 function Board() {
-  const [session] = useState(() => new QueueSession());
+  const [session] = useState(() => new QueueSession({ ...defaults, readGame: getBoardGame }));
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   useEffect(() => { session.start(); return () => session.stop(); }, [session]);
   const lobby = state.membership?.lobby;
@@ -103,11 +104,14 @@ function Board() {
 function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
   const big = "text-3xl xl:text-4xl";
   const entries = game.ballot?.groups.flatMap(g => g.entries) ?? [];
+  const pairs = game.mode.rules.ballot === "pairs";
   // Twenty songs still fit on one screen next to the prompt: smaller cards, more columns.
   const dense = entries.length > 6;
   const packed = entries.length > 12;
   const playing = game.phase !== "guess" && game.now_playing && !game.now_playing.hidden ? game.now_playing.song : null;
   const winners = game.last_result?.entries.filter(e => e.winner) ?? [];
+  // With overlap the newest results can be for songs that haven't played yet.
+  const upNext = !!game.last_result && !!game.now_playing && game.last_result.round > game.now_playing.round;
   return (
     <div className="flex flex-col gap-5 shrink-0 min-h-0">
       {game.phase === "collect" && (
@@ -115,7 +119,25 @@ function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
           {game.mode.rules.collect === "propose" ? "Secret songs proposed" : "Songs picked"}: <strong className="text-[#05EEFF]">{game.submission_count}</strong>
         </p>
       )}
-      {game.phase === "vote" && game.ballot && (
+      {game.phase === "vote" && game.ballot && pairs && (
+        <ol className={`grid gap-3 ${game.ballot.groups.length > 4 ? "lg:grid-cols-3" : "lg:grid-cols-2"}`} aria-label="Pairs on the ballot">
+          {game.ballot.groups.map((group, i) => (
+            <li key={group.entries[0].submission_id} className="rounded-lg border border-zinc-700 p-2 flex flex-col gap-1 min-w-0">
+              <p className="text-base text-zinc-400">{group.entries.length > 1 ? `Pair ${i + 1}` : "Bye: plays without a vote"}</p>
+              {group.entries.map((e, n) => (
+                <div key={e.submission_id} className="min-w-0">
+                  {n > 0 && <p className="text-sm font-bold text-[#FF0048] text-center">vs</p>}
+                  <div className="flex items-center gap-3 rounded-lg bg-zinc-800 p-2 min-w-0">
+                    <img src={e.song.thumbnail_url} alt="" className="h-10 w-16 rounded object-cover shrink-0" />
+                    <p className="text-lg font-semibold line-clamp-1 min-w-0">{e.song.title}</p>
+                  </div>
+                </div>
+              ))}
+            </li>
+          ))}
+        </ol>
+      )}
+      {game.phase === "vote" && game.ballot && !pairs && (
         <ul className={`grid sm:grid-cols-2 ${packed ? "gap-1.5 lg:grid-cols-4" : dense ? "gap-2 lg:grid-cols-3" : "gap-4"}`} aria-label="Songs on the ballot">
           {entries.map(e => (
             <li key={e.submission_id} className={`flex items-center rounded-lg bg-zinc-800 min-w-0 ${packed ? "gap-2 p-1.5" : dense ? "gap-3 p-2" : "gap-4 p-3"}`}>
@@ -136,10 +158,11 @@ function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
       )}
       {game.phase === "reveal" && game.last_result && (
         <div className="flex flex-col gap-4">
+          {game.last_result.note === "nobody_to_guess" && <p className="text-3xl font-bold text-zinc-300">Skipped: nobody left to guess</p>}
           <p className="text-5xl sm:text-6xl font-extrabold text-[#05EEFF]">{game.last_result.answer ?? game.last_result.entries[0]?.song.title}</p>
           {game.last_result.entries[0] && <p className="text-2xl text-zinc-300">Proposed by {name(game.last_result.entries[0].submitted_by_user_id, game.last_result.entries[0].submitted_by_nickname)} · +{game.last_result.entries[0].points}</p>}
           <ol className="flex flex-col gap-2">
-            {game.last_result.guesses.length === 0 && <li className="text-2xl">Nobody named it.</li>}
+            {game.last_result.guesses.length === 0 && game.last_result.note !== "nobody_to_guess" && <li className="text-2xl">Nobody named it.</li>}
             {game.last_result.guesses.map(g => <li key={g.user_id} className="text-2xl">{g.rank}. {name(g.user_id, g.nickname)} <span className="font-mono">+{g.points}</span></li>)}
           </ol>
         </div>
@@ -148,16 +171,28 @@ function PhaseBoard({ game, name }: { game: GameView; name: NameFn }) {
         <div className="flex items-center gap-4">
           <img src={playing.thumbnail_url} alt="" className="h-24 w-40 rounded-lg object-cover shrink-0" />
           <div className="min-w-0">
-            <p className="text-lg text-zinc-400">Now playing · picked by {name(game.now_playing?.submitted_by_user_id, game.now_playing?.submitted_by_nickname)}</p>
+            <p className="text-lg text-zinc-400">Now playing · round {game.now_playing?.round} · picked by {name(game.now_playing?.submitted_by_user_id, game.now_playing?.submitted_by_nickname)}</p>
             <p className="text-3xl font-bold line-clamp-2">{playing.title}</p>
           </div>
         </div>
       )}
-      {game.phase !== "reveal" && game.phase !== "guess" && game.mode.rules.collect === "pick" && winners.length > 0 && (
-        <p className="text-2xl text-zinc-300">Round {game.last_result!.round} winner{winners.length > 1 ? "s" : ""}: {winners.map(w => `${w.song.title} (${name(w.submitted_by_user_id, w.submitted_by_nickname)})`).join(", ")}</p>
+      {game.phase !== "reveal" && game.phase !== "guess" && pairs && game.last_result && game.phase !== "vote" && (
+        <div className="flex flex-col gap-1">
+          <p className="text-2xl text-zinc-300">Round {game.last_result.round}{upNext ? " · up next" : ""}</p>
+          <ol className="flex flex-col gap-1">
+            {resultGroups(game.last_result).map((group, i) => <li key={group[0].submission_id} className="text-xl text-zinc-200 line-clamp-1">Pair {i + 1}: {pairSummary(group)}</li>)}
+          </ol>
+        </div>
       )}
-      {game.phase === "ended" && game.scoreboard[0] && (
-        <p className="text-5xl font-extrabold">{game.scoreboard[0].points > 0 ? `${name(game.scoreboard[0].user_id, game.scoreboard[0].nickname)} wins!` : "Game over"}</p>
+      {game.phase !== "reveal" && game.phase !== "guess" && !pairs && game.mode.rules.collect === "pick" && winners.length > 0 && (
+        <p className="text-2xl text-zinc-300">Round {game.last_result!.round} winner{winners.length > 1 ? "s" : ""}{upNext ? " (up next)" : ""}: {winners.map(w => `${w.song.title} (${name(w.submitted_by_user_id, w.submitted_by_nickname)})`).join(", ")}</p>
+      )}
+      {game.phase === "ended" && game.last_result?.note === "no_proposals" && <p className="text-3xl text-zinc-300">Nobody proposed a song.</p>}
+      {game.phase === "ended" && game.last_result?.note === "ended_early" && (
+        <p className="text-3xl text-zinc-300">The game ended during round {game.last_result.round}. It was <strong className="text-[#05EEFF]">{game.last_result.answer}</strong>.</p>
+      )}
+      {game.phase === "ended" && (
+        <p className="text-5xl font-extrabold">{winnerLine(game, (id, nickname) => name(id, nickname))}</p>
       )}
     </div>
   );

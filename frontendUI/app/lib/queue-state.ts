@@ -26,7 +26,7 @@ export type SessionDependencies = {
   /** Omitted: the session never reads the game (queue-only tests). */
   readGame?: (membership: string, signal: AbortSignal) => Promise<GameSnapshot>;
 };
-const defaults: SessionDependencies = {
+export const defaults: SessionDependencies = {
   current: getCurrent, read: getQueue, identity: currentUserId, events: streamLobbyEvents,
   refresh, submit: (m, a) => submitEntry(m, a.url, a.request_id), advance, veto, vote,
   move: moveEntry, policy: setVotingPolicy, leave: leaveLobby, readGame: getGame,

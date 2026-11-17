@@ -16,6 +16,41 @@ import { JOIN_NOTICE_KEY, removeMember, type Member } from "../lib/lobby";
 import { QueueSession } from "../lib/queue-state";
 import { type AdvanceReason, type QueueEntry, type QueueView } from "../lib/queue";
 
+/**
+ * Where the host's jukebox song was when a game took over the player, per queue
+ * entry, so "Back to the jukebox" resumes it there. Session storage: a lost value
+ * only means the song restarts.
+ */
+const positionKey = (entryId: string) => `crescend.jukebox.position.${entryId}`;
+function savedPosition(entryId: string) {
+  try { const v = Number(sessionStorage.getItem(positionKey(entryId))); return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0; } catch { return 0; }
+}
+function savePosition(entryId: string, seconds: number) {
+  try { sessionStorage.setItem(positionKey(entryId), String(seconds)); } catch { /* private mode: restart instead */ }
+}
+function forgetPosition(entryId: string) {
+  try { sessionStorage.removeItem(positionKey(entryId)); } catch { /* nothing stored */ }
+}
+
+/** The host's queue player, starting where this entry was last paused. */
+function JukeboxPlayer({ entry, disabled, onEnded, onSkipError }: {
+  entry: QueueEntry; disabled: boolean; onEnded: () => void; onSkipError: () => void;
+}) {
+  // Fixed for this mount: the saved position only matters when the player comes back.
+  const [start] = useState(() => savedPosition(entry.id));
+  return (
+    <YouTubePlayer
+      videoId={entry.video.video_id}
+      occurrence={entry.id}
+      start={start}
+      disabled={disabled}
+      onPosition={seconds => savePosition(entry.id, seconds)}
+      onEnded={() => { forgetPosition(entry.id); onEnded(); }}
+      onSkipError={() => { forgetPosition(entry.id); onSkipError(); }}
+    />
+  );
+}
+
 function Lobby() {
   const router = useRouter();
   const [session] = useState(() => new QueueSession());
@@ -101,6 +136,9 @@ function Lobby() {
   const game = state.game?.game ?? null;
   // While a game runs the host player plays the game's songs; the queue keeps its place.
   const gameRunning = game?.status === "running";
+  // After a game the jukebox stays paused behind the Game over card until the host
+  // presses "Back to the jukebox" (which dismisses the game).
+  const jukeboxPaused = !!game;
 
   if (!membership) return (
     <div className="text-center">
@@ -279,8 +317,9 @@ function Lobby() {
           </button>
         ))}
 
-      {gameRunning && <p className="w-full max-w-4xl text-sm text-zinc-400">
-        The jukebox is paused during the game{upcoming.length + (current ? 1 : 0) > 0 && ` with ${upcoming.length + (current ? 1 : 0)} song${upcoming.length + (current ? 1 : 0) === 1 ? "" : "s"} waiting`}. It picks up where it left off when the game ends.
+      {jukeboxPaused && <p className="w-full max-w-4xl text-sm text-zinc-400">
+        The jukebox is paused{gameRunning ? " during the game" : ""}{upcoming.length + (current ? 1 : 0) > 0 && ` with ${upcoming.length + (current ? 1 : 0)} song${upcoming.length + (current ? 1 : 0) === 1 ? "" : "s"} waiting`}.{" "}
+        {gameRunning ? "It picks up where it left off when the game ends." : isHost ? "Press “Back to the jukebox” to pick up where it left off." : "It picks up when the host goes back to the jukebox."}
       </p>}
       {!gameRunning && <div className="w-full max-w-4xl">
         <SongPicker
@@ -303,7 +342,7 @@ function Lobby() {
         <button onClick={() => session.discardSubmission()} className="min-h-11 px-3 underline">Start a different submission</button>
       </div>}
 
-      {gameRunning ? null : current ? (
+      {jukeboxPaused ? null : current ? (
         <div className="w-full max-w-4xl bg-zinc-900 p-4 rounded-xl border border-zinc-800">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 sm:gap-4 mb-3">
             <div className="min-w-0">
@@ -326,10 +365,9 @@ function Lobby() {
             </div>
           </div>
           {isHost ? (
-            <YouTubePlayer
+            <JukeboxPlayer
               key={current.id}
-              videoId={current.video.video_id}
-              occurrence={current.id}
+              entry={current}
               disabled={disabled}
               onEnded={() => advanceFrom(current, "ended")}
               onSkipError={() => advanceFrom(current, "playback_error_skip")}
