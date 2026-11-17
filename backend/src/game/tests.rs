@@ -22,6 +22,7 @@ mod g5_saved;
 mod g6_lifecycle;
 mod g6_load;
 mod g6_nicknames;
+mod ghosts;
 
 const NOW: i64 = 1_800_000_000;
 

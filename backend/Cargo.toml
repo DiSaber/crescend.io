@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 unicode-normalization = "0.1"
+unicode-segmentation = "1"
 html-escape = "0.3"
 futures-util = "0.3.34"
 dotenvy = "0.15.7"

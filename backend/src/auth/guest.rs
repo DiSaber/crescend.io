@@ -23,7 +23,9 @@ const COOKIE_SECONDS: i64 = 400 * 24 * 60 * 60;
 /// Set by Caddy from the resolved client address (see docs/guest-join.md).
 pub const CLIENT_IP_HEADER: &str = "x-crescend-client-ip";
 
-pub const NEW_GUESTS_PER_WINDOW: usize = 20;
+/// High enough for a class or party behind one shared public address (campus Wi-Fi,
+/// carrier NAT); still stops one client from minting accounts without limit.
+pub const NEW_GUESTS_PER_WINDOW: usize = 200;
 pub const WINDOW_SECONDS: i64 = 60 * 60;
 
 pub fn cookie(config: &AuthConfig, key: String) -> Cookie<'static> {

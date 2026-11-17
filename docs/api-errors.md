@@ -14,11 +14,21 @@ Clients should branch on the HTTP status and stable `code`, and use `error` for 
 
 | Status | Code | When |
 | --- | --- | --- |
-| 400 | `invalid_nickname` | Join or create nickname is empty after trimming, longer than 24 characters, or contains control/invisible formatting characters. |
+| 400 | `invalid_nickname` | Join or create nickname is empty after trimming, longer than 24 user-perceived characters (an emoji sequence counts once), or contains control/invisible formatting characters outside an emoji sequence. |
+| 400 | `invalid_join_code` | A join code that isn't six letters or digits once spaces and dashes are dropped. Also from `POST /api/auth/guest?join_code=`. Message: "Session codes are six letters or numbers, like A1B2C3." |
+| 404 | `lobby_unavailable` | Join, or `POST /api/auth/guest?join_code=`, with a code no active lobby has. Guest sign-in then creates no account. |
 | 403 | `google_account_required` | A guest account tried to create a lobby. Sign in with Google to host. |
-| 429 | `too_many_guests` | `POST /api/auth/guest` would create more than 20 guest accounts from one address in an hour. `Retry-After` gives the seconds to wait. Restoring an existing guest is never limited. |
+| 429 | `too_many_guests` | `POST /api/auth/guest` would create more than 200 guest accounts from one address in an hour. `Retry-After` gives the seconds to wait. Restoring an existing guest is never limited. |
 
 See [guest join](guest-join.md).
+
+## Member removal errors
+
+`DELETE /api/lobbies/memberships/{membership_id}/members/{user_id}` returns
+`403 host_required` when the caller isn't the host, `400 cannot_remove_host` when the
+target is the host, `403 membership_forbidden` for a generation that isn't the
+caller's active one and `400 invalid_request` for malformed IDs or a body. An absent
+target is a 204 no-op. See [lobby API](lobby-api.md#remove-a-member).
 
 ## Queue errors
 

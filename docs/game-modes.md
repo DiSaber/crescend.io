@@ -247,10 +247,9 @@ Recorded as each milestone lands; [game-api.md](game-api.md) is the endpoint ref
   every commit bumps the revision exactly once, and every vote counts once. SQLite's
   busy and pool waits are 5 s (were 1 s): twenty serialized writes in one second can
   take longer than a second on a slow host, and a 1 s wait answered some players 503.
-- **Known limit**: guest sign-in allows 20 new guest accounts per address per hour
-  ([guest join](guest-join.md#abuse-limits)). A party of more than 20 new guests on
-  one Wi-Fi shares one address, so the 21st new guest waits (returning guests and
-  Google users are not limited).
+- **Guest limit**: guest sign-in allows 200 new guest accounts per address per hour
+  ([guest join](guest-join.md#abuse-limits)), raised from 20 because a class on one
+  Wi-Fi shares one public address. Returning guests and Google users are not limited.
 - **TV board**: the root font scales with the screen (16 px at 1280x720, 24 px at
   1080p, 48 px at 4K) and the board fills exactly one screen. The prompt image takes
   the height left over, and sits beside the prompt text while voting; 7+ ballot songs

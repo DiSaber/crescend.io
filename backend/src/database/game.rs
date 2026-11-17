@@ -199,9 +199,13 @@ fn votes_needed(game: &Game, groups: &[Vec<Entry>], user: i64) -> i64 {
     )
 }
 
-/// True when every active member has done everything the phase allows.
+/// True when every active member has done everything the phase allows. Members away
+/// from the lobby for over a minute (no open event stream; `lobbies::presence`) are
+/// not waited for; the host always is.
 async fn phase_complete(tx: &mut Tx<'_>, game: &Game) -> Result<bool, GameError> {
-    let members = members(tx, &game.lobby_id).await?;
+    let mut members = members(tx, &game.lobby_id).await?;
+    let away = crate::lobbies::presence::away(&game.lobby_id);
+    members.retain(|user| *user == game.owner || !away.contains(user));
     match game.phase {
         Phase::Collect => {
             let entries = round_entries(tx, game).await?;

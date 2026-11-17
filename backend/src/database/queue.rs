@@ -30,13 +30,7 @@ pub(crate) async fn snapshot(
             .bind(&bound.lobby_id)
             .fetch_one(&mut **tx)
             .await?;
-    let guests: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM lobby_memberships WHERE lobby_id = ? AND user_id != ?",
-    )
-    .bind(&bound.lobby_id)
-    .bind(bound.owner)
-    .fetch_one(&mut **tx)
-    .await?;
+    let guests = present_guests(tx, &bound.lobby_id).await?;
     let threshold = if mode == "fixed" {
         fixed_count
     } else if guests == 0 {
@@ -386,15 +380,31 @@ pub(crate) enum Moderation<'a> {
     Policy(&'a crate::models::queue::PolicyRequest),
 }
 
+/// Guests (members other than the host) the skip-vote majority counts: everyone except
+/// members away from the lobby for over a minute (`lobbies::presence`).
+async fn present_guests(tx: &mut Transaction<'_, Sqlite>, lobby: &str) -> Result<i64, sqlx::Error> {
+    let guests: Vec<i64> = sqlx::query_scalar(
+        "SELECT m.user_id FROM lobby_memberships m JOIN lobbies l ON l.id = m.lobby_id
+         WHERE m.lobby_id = ? AND m.user_id != l.owner_user_id",
+    )
+    .bind(lobby)
+    .fetch_all(&mut **tx)
+    .await?;
+    let away = crate::lobbies::presence::away(lobby);
+    Ok(guests.iter().filter(|user| !away.contains(user)).count() as i64)
+}
+
 /// Runs inside the membership/queue writer; owns neither revision nor commit/publication.
 pub(crate) async fn reevaluate(
     tx: &mut Transaction<'_, Sqlite>,
     lobby: &str,
 ) -> Result<(), sqlx::Error> {
-    let (mode,fixed,guests): (String,Option<i64>,i64) = sqlx::query_as("SELECT p.mode,p.fixed_count,
-        (SELECT count(*) FROM lobby_memberships m WHERE m.lobby_id = l.id AND m.user_id != l.owner_user_id)
-        FROM lobby_queue_policies p JOIN lobbies l ON l.id = p.lobby_id WHERE l.id = ?")
-        .bind(lobby).fetch_one(&mut **tx).await?;
+    let (mode, fixed): (String, Option<i64>) =
+        sqlx::query_as("SELECT mode, fixed_count FROM lobby_queue_policies WHERE lobby_id = ?")
+            .bind(lobby)
+            .fetch_one(&mut **tx)
+            .await?;
+    let guests = present_guests(tx, lobby).await?;
     if guests == 0 {
         return Ok(());
     }
