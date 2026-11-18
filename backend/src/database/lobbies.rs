@@ -241,7 +241,7 @@ impl Database {
     ) -> Result<bool, LobbyError> {
         let now = timestamp(clock())?;
         Ok(sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM lobbies WHERE join_code = ? AND closed_at IS NULL AND expires_at > ?)",
+            "SELECT EXISTS(SELECT 1 FROM lobbies WHERE REPLACE(REPLACE(REPLACE(join_code,'O','0'),'I','1'),'L','1') = ? AND closed_at IS NULL AND expires_at > ?)",
         )
         .bind(code)
         .bind(now)
@@ -394,8 +394,10 @@ impl Database {
         if !account {
             return Err(LobbyError::Unauthorized);
         }
-        let lobby = sqlx::query("SELECT id, join_code, owner_user_id, created_at, expires_at, revision FROM lobbies WHERE join_code = ? AND closed_at IS NULL AND expires_at > ?")
-            .bind(code).bind(now).fetch_optional(&mut *tx).await?
+        let lobby = sqlx::query(
+            "SELECT id, join_code, owner_user_id, created_at, expires_at, revision FROM lobbies WHERE REPLACE(REPLACE(REPLACE(join_code,'O','0'),'I','1'),'L','1') = ? AND closed_at IS NULL AND expires_at > ?",
+        )
+        .bind(code).bind(now).fetch_optional(&mut *tx).await?
             .ok_or(LobbyError::LobbyUnavailable)?;
         let lobby_id: LobbyId = lobby.try_get("id")?;
         let owner: i64 = lobby.try_get("owner_user_id")?;
