@@ -58,21 +58,41 @@ pub struct LobbyAllocation {
     pub join_code: String,
 }
 
+/// Characters allowed in a generated join code. This is the Crockford-style
+/// ambiguity-reduced set: it keeps the digits `0` and `1` but drops the letters
+/// `O`, `I` and `L`, which are easily confused with them (or each other) when a
+/// code is read off a projector. 32 characters divide 256 exactly, so every
+/// byte maps uniformly with no rejection sampling required.
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// Fold a visually ambiguous character onto the canonical character that is
+/// generated in its place. `O` -> `0`, `I`/`L` -> `1`. The canonical set above
+/// never emits `O`, `I` or `L`, so this folding cannot make two distinct codes
+/// collide: it only maps look-alikes that could not both have been generated
+/// onto the single code that was. Legacy lobbies created before this change may
+/// still contain `O`/`I`/`L` because the old alphabet emitted them; folding both
+/// the stored code and the typed code at lookup time keeps those lobbies joinable.
+fn canonicalize_char(b: u8) -> u8 {
+    match b {
+        b'O' => b'0',
+        b'I' | b'L' => b'1',
+        other => other,
+    }
+}
+
 impl LobbyAllocation {
     pub fn random() -> Result<Self, ()> {
         let mut bytes = [0u8; 64];
         rand::rngs::SysRng
             .try_fill_bytes(&mut bytes)
             .map_err(|_| ())?;
-        const ALPHABET: &[u8; 36] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        // 252 is divisible by 36: rejecting the last four byte values avoids modulo bias.
-        // A bounded batch also fails closed instead of spinning if entropy is unusable.
+        // 256 is divisible by 32: every byte value maps to exactly one alphabet
+        // character, so there is no modulo bias and no rejected bytes.
         let join_code: String = bytes[32..]
             .iter()
             .copied()
-            .filter(|b| *b < 252)
             .take(6)
-            .map(|b| ALPHABET[usize::from(b % 36)] as char)
+            .map(|b| ALPHABET[usize::from(b % 32)] as char)
             .collect();
         if join_code.len() != 6 {
             return Err(());
@@ -167,11 +187,62 @@ impl JoinLobbyRequest {
 }
 
 /// Six letters or digits, ignoring case and any spaces or dashes ("abc 123", "ABC-123").
+/// Look-alike letters are folded to their canonical digits (`O`->`0`, `I`/`L`->`1`)
+/// so a code typed from an old or ambiguous code still matches the stored lobby.
 pub fn normalize_code(raw: &str) -> Option<String> {
     let code: String = raw
         .chars()
         .filter(|c| !(c.is_whitespace() || matches!(c, '-' | '\u{2010}'..='\u{2015}')))
         .collect();
-    (code.len() == 6 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
-        .then(|| code.to_ascii_uppercase())
+    (code.len() == 6 && code.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| {
+        code.bytes()
+            .map(|b| canonicalize_char(b.to_ascii_uppercase()) as char)
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A generated code must never contain a look-alike character.
+    #[test]
+    fn generated_codes_avoid_look_alike_characters() {
+        const FORBIDDEN: &[u8] = b"OIL";
+        for _ in 0..2048 {
+            let allocation = LobbyAllocation::random().expect("entropy available");
+            assert_eq!(allocation.join_code.len(), 6);
+            assert!(
+                allocation
+                    .join_code
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            );
+            assert!(
+                allocation
+                    .join_code
+                    .bytes()
+                    .all(|b| !FORBIDDEN.contains(&b)),
+                "code contained a look-alike character: {}",
+                allocation.join_code
+            );
+        }
+    }
+
+    /// Typing a look-alike of a character must resolve to the same canonical code,
+    /// so codes from lobbies created with the old alphabet still join.
+    #[test]
+    fn typed_look_alikes_normalize_to_canonical_code() {
+        // O <-> 0 and I/L <-> 1 folds.
+        assert_eq!(normalize_code("A0B1C0"), Some("A0B1C0".into()));
+        assert_eq!(normalize_code("AOBICL"), Some("A0B1C1".into()));
+        assert_eq!(normalize_code("ao00l1"), Some("A00011".into()));
+        // Spaces and dashes are ignored; the remaining six characters are folded.
+        assert_eq!(normalize_code("AO-BI CL"), Some("A0B1C1".into()));
+        // A legacy code "A0OI1L" folds deterministically to "A00111".
+        let legacy = "A0OI1L";
+        let canonical = normalize_code(legacy).unwrap();
+        assert_eq!(canonical, "A00111");
+        assert_eq!(Some(canonical.clone()), normalize_code(&canonical));
+    }
 }
